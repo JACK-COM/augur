@@ -30,6 +30,7 @@ Then ask your agent to run `augur help install` and follow it. The default backe
 ```
 augur check --live                            the backend answers, and answers right
 augur ask -q questions.json -t "some text"    one call; probabilities per question
+augur ask --request - < call.json             the same call as one JSON object on stdin
 augur calibrate items.json --out run-a/       AUROC and floor scores on your labelled items
 augur selftest                                the client, offline
 ```

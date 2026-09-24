@@ -594,6 +594,35 @@ class _Stub:
                                            "usage": {"input_tokens": 1000}}).encode())
 
 
+REQUEST_KEYS = {"questions", "text", "state", "subject", "siblings", "model", "caller"}
+
+
+def _request(req):
+    """A whole `ask` call as one JSON object -> ask()'s arguments. Raises ValueError naming
+    the first fault; an unknown key is a fault, so a misspelled `subjcet` is never dropped."""
+    if not isinstance(req, dict):
+        raise ValueError("the request is not a JSON object")
+    unknown = sorted(set(req) - REQUEST_KEYS)
+    if unknown:
+        raise ValueError(f"unknown request key {unknown[0]!r}; known: {', '.join(sorted(REQUEST_KEYS))}")
+    if not isinstance(req.get("questions"), dict) or not req["questions"]:
+        raise ValueError("`questions` must be a non-empty object of named questions")
+    if ("text" in req) == ("state" in req):
+        raise ValueError("give exactly one of `text` (a string) and `state` (an object)")
+    if "text" in req and not isinstance(req["text"], str):
+        raise ValueError("`text` must be a string")
+    if "state" in req and not isinstance(req["state"], dict):
+        raise ValueError("`state` must be an object")
+    sib = req.get("siblings")
+    if sib is not None and not (isinstance(sib, list) and all(isinstance(s, str) for s in sib)):
+        raise ValueError("`siblings` must be a list of strings")
+    for k in ("subject", "model", "caller"):
+        if req.get(k) is not None and not (isinstance(req[k], str) and req[k]):
+            raise ValueError(f"`{k}` must be a non-empty string")
+    return (req["text"] if "text" in req else req["state"], req["questions"],
+            {"subject": req.get("subject"), "siblings": sib, "model": req.get("model"), "caller": req.get("caller")})
+
+
 def _selftest():
     """The client end to end against a stand-in backend: no network, no key, no model.
     Exercises the manifest, the ledger, the answer checks, retry, batch and re-ask,
@@ -640,6 +669,39 @@ def _selftest():
                 rows = list(csv.reader(f))
             expect(rows[0][0] == "ts" and rows[-1][2] == "selftest" and rows[-1][6] == "0.001000",
                    f"ledger: {rows[-1] if rows else 'empty'}")
+
+            import contextlib
+            import io
+            req = {"questions": fruit, "text": "banana", "subject": "lunch", "caller": "piped"}
+            saved_stdin, sys.stdin = sys.stdin, io.StringIO(json.dumps(req))
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    code = main(["ask", "--request", "-", "--caller", "flagged"])
+            finally:
+                sys.stdin = saved_stdin
+            piped = json.loads(out.getvalue()) if code == 0 else {}
+            expect(piped.get("answers", {}).get("fruit", {}).get("noul", 0) > 0.9
+                   and stub.calls[-1]["state"]["subject"] == "lunch", f"--request -: exit {code}")
+            with open(Path(home) / "usage.csv") as f:
+                expect(list(csv.reader(f))[-1][2] == "flagged", "--request: a flag did not win over the request")
+            with open(Path(home) / "call.json", "w") as f:
+                json.dump(req, f)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                codes = (main(["ask", "--request", str(Path(home) / "call.json")]),
+                         main(["ask", "--request", str(Path(home) / "call.json"), "-q", "x.json"]),
+                         main(["ask"]))
+            expect(codes == (0, 2, 2), f"--request FILE, -q beside --request, no input: exits {codes}")
+            for bad, fragment in (([], "not a JSON object"), ({"questions": fruit, "text": "x", "subjcet": "y"}, "'subjcet'"),
+                                  ({"questions": fruit}, "exactly one"), ({"questions": fruit, "text": "x", "state": {}}, "exactly one"),
+                                  ({"questions": {}, "text": "x"}, "non-empty"), ({"questions": fruit, "text": 3}, "`text`"),
+                                  ({"questions": fruit, "text": "x", "siblings": "a,b"}, "`siblings`"),
+                                  ({"questions": fruit, "text": "x", "caller": ""}, "`caller`")):
+                try:
+                    _request(bad)
+                    expect(False, f"request accepted: {bad}")
+                except ValueError as e:
+                    expect(fragment in str(e), f"request {bad}: {e}")
 
             for bad in (float("nan"), 1.2):
                 stub.answer = lambda state, qid, q, bad=bad: bad
@@ -837,6 +899,14 @@ examples:
                                                so the model knows which aircraft the sentence is about
   augur ask -q closers.json -t "..." --caller copy_lint
                                                the caller is what the usage ledger records the cost under
+  echo '{"questions": {...}, "text": "..."}' | augur ask --request -
+                                               the whole call as one JSON object on stdin, for a program
+                                               that runs augur as a command; prints the same response
+
+A request object holds `questions` and exactly one of `text` (a string) or `state` (an object),
+and may add `subject`, `siblings` (a list), `model` and `caller`. Any other key is refused, and a
+flag given beside --request wins over the request's field. Exit 2 is bad input, exit 3 an
+unavailable backend; the answers are at `answers.<name>`, a `noul` as a probability from 0 to 1.
 """,
     "calibrate": """examples:
   augur calibrate items.json --out run-a/
@@ -882,14 +952,16 @@ def main(argv):
     k = cmd("check", "positive check for the backend", parents=[common])
     k.add_argument("--live", action="store_true", help="ask two known Nouls and check the answers")
     a = cmd("ask", "one call; prints the response JSON", parents=[common])
-    a.add_argument("-q", "--questions", required=True, metavar="FILE", help="JSON file: {name: question}")
-    g = a.add_mutually_exclusive_group(required=True)
+    a.add_argument("-q", "--questions", metavar="FILE", help="JSON file: {name: question}")
+    g = a.add_mutually_exclusive_group()
     g.add_argument("-t", "--text", help="state as a string (stored under `text`)")
     g.add_argument("-s", "--state", metavar="FILE", help="JSON file with the state object")
+    g.add_argument("-r", "--request", metavar="FILE",
+                   help="the whole call as one JSON object; `-` reads it from stdin")
     a.add_argument("--subject", help="what the state is about, named to the model")
     a.add_argument("--siblings", metavar="A,B", help="comma-separated neighbours of the subject")
     a.add_argument("--model", help="override the backend's pinned model or checkpoint")
-    a.add_argument("--caller", default="cli", help="the name the usage ledger books the cost under")
+    a.add_argument("--caller", help="the name the usage ledger books the cost under (default cli)")
     c = cmd("calibrate", "measure a backend on a labelled items file", parents=[common])
     c.add_argument("items", help="JSON file of questions and labelled items")
     c.add_argument("--runs", type=int, default=1, metavar="N", help="repeats per item (default 1)")
@@ -930,21 +1002,37 @@ def main(argv):
         print(("ok: " if ok else "unavailable: ") + reason)
         return 0 if ok else 3
     if args.cmd == "ask":
+        # a flag given beside --request wins over the request's own field
+        flags = {"subject": args.subject, "model": args.model, "caller": args.caller,
+                 "siblings": [x.strip() for x in args.siblings.split(",") if x.strip()] if args.siblings else None}
         try:
-            with open(args.questions) as f:
-                questions = json.load(f)
-            if args.text is not None:
-                state = args.text
+            if args.request is not None:
+                if args.questions is not None:
+                    raise ValueError("--request carries the questions; drop -q")
+                if args.request == "-":
+                    req = json.load(sys.stdin)
+                else:
+                    with open(args.request) as f:
+                        req = json.load(f)
+                state, questions, kw = _request(req)
+                kw.update({k: v for k, v in flags.items() if v is not None})
             else:
-                with open(args.state) as f:
-                    state = json.load(f)
+                if args.questions is None or (args.text is None and args.state is None):
+                    raise ValueError("give -q with -t or -s, or the whole call with --request")
+                with open(args.questions) as f:
+                    questions = json.load(f)
+                if args.text is not None:
+                    state = args.text
+                else:
+                    with open(args.state) as f:
+                        state = json.load(f)
+                kw = flags
         except (OSError, ValueError) as e:
             print(f"bad input: {e}", file=sys.stderr)
             return 2
         try:
-            r = ask(state, questions, subject=args.subject,
-                    siblings=[x.strip() for x in args.siblings.split(",") if x.strip()] if args.siblings else None,
-                    backend=args.backend, model=args.model, caller=args.caller)
+            r = ask(state, questions, subject=kw["subject"], siblings=kw["siblings"],
+                    backend=args.backend, model=kw["model"], caller=kw["caller"] or "cli")
         except AugurUnavailable as e:
             print(f"unavailable: {e}", file=sys.stderr)
             return 3
