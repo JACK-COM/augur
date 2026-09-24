@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "augur"
+dynamic = ["version"]
+description = "Asks a decision model typed questions about a text and returns calibrated probabilities."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.scripts]
+augur = "augur.augur:cli"
+
+[project.urls]
+Homepage = "https://github.com/JACK-COM/augur"
+
+[tool.setuptools.dynamic]
+version = {attr = "augur.augur.__version__"}
+
+[tool.setuptools.package-data]
+augur = ["INSTALL-augur.md"]

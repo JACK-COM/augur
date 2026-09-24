@@ -1,0 +1,7 @@
+# Copies of panoply-lib files are generated: a hand edit to one fails here.
+pre-commit:
+  commands:
+    panoply-lib:
+      run: ../panoply-lib/sync.sh --check augur
+    selftest:
+      run: python3 src/augur/augur.py selftest
