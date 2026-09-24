@@ -51,4 +51,4 @@ git -C "$tap" commit -qam "feat: updates Augur to $version
 git -C "$tap" push -q origin main
 
 echo "released $version ($sha)"
-echo "upgrade:  brew update && brew upgrade augur"
+echo "upgrade:  brew update && brew upgrade jack-com/panoply/augur"
