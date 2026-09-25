@@ -52,3 +52,5 @@ git -C "$tap" push -q origin main
 
 echo "released $version ($sha)"
 echo "upgrade:  brew update && brew upgrade jack-com/panoply/augur"
+# Names each guide page this release moved past; it warns and never blocks
+[[ -x "$tap/scripts/guides-behind.sh" ]] && "$tap/scripts/guides-behind.sh" augur "$version" || true
