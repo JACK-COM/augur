@@ -23,7 +23,7 @@ brew install jack-com/panoply/augur
 
 The full name matters: homebrew-core has an unrelated cask called `augur`. Or with [uv](https://docs.astral.sh/uv/): `uv tool install git+https://github.com/JACK-COM/augur`.
 
-Then ask your agent to run `augur help install` and follow it. The default backend needs a [TypeSafe](https://typesafe.ai) API key.
+Then ask your agent to run `augur help install` and follow it. The default backend needs a [TypeSafe](https://typesafe.ai) API key; the local and command backends do not.
 
 ## Use
 
@@ -50,7 +50,7 @@ Every call's tokens and cost are logged to `~/.augur/usage.csv`.
 
 ## Backends
 
-`jev`, TypeSafe's hosted System One model, is the default and is pinned to one version, because a threshold tuned on one model does not transfer to the next. `laya`, Convai's open-weight model, runs locally in a virtualenv you provide; it is a base to fine-tune, and near chance on our items before that. A backend earns a threshold only through `augur calibrate` on your items.
+`jev`, TypeSafe's hosted System One model, is the default and is pinned to one version, because a threshold tuned on one model does not transfer to the next. `laya`, Convai's open-weight model, runs locally in a virtualenv you provide; it is a base to fine-tune, and near chance on our items before that. Any other decision model answers through a **command backend**: a script that reads one `augur ask --request` object on stdin and prints Augur's reply, named under `backends` with a `command` key. A backend earns a threshold only through `augur calibrate` on your items.
 
 ### Choosing a backend
 
@@ -89,7 +89,7 @@ uv pip install --python ~/.augur-laya/bin/python laya torch
 
 `augur check` flags a misspelled or mistyped key, and `augur schema` writes the schema to `~/.augur/augur.schema.json` for your editor.
 
-`jev` takes `model` (the pinned version), `price_per_mtok` (for the usage ledger) and `keychain_service` or `env_key` (where to find the key). `laya` takes `python`, `checkpoint`, `device` (`cuda`, `mps` or `cpu`; unset lets Laya pick) and `head_max_len`. `--model` overrides the model or checkpoint for one call.
+`jev` takes `model` (the pinned version), `price_per_mtok` (for the usage ledger) and `keychain_service` or `env_key` (where to find the key). `laya` takes `python`, `checkpoint`, `device` (`cuda`, `mps` or `cpu`; unset lets Laya pick) and `head_max_len`. A command backend takes `command` (required: an argument list, or one string split as a shell would), `model` (sent in every request), `timeout` (seconds, 60 by default) and `price_per_mtok`. `--model` overrides the model or checkpoint for one call.
 
 Run `augur check --live` after switching, and recalibrate: `augur calibrate items.json --backend laya --compare run-a/means-jev.json` shows how far each item moved from the previous backend.
 

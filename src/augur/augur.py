@@ -34,6 +34,10 @@ the `AUGUR_BACKEND` environment variable, then the `backend=` argument:
          `augur_laya.py` inside a virtualenv holding `laya` and `torch`; the manifest
          names that interpreter. Free and fast, and by its makers' own card a base to
          fine-tune rather than a zero-shot engine: calibrate before trusting a threshold.
+  <name> Any other entry under `backends` with a `command` is a command backend: the
+         command gets one `ask --request`-shaped object on stdin ({questions, state,
+         model?}) and prints {answers, model?, usage?}, so any model a script can wrap
+         answers through Augur, and `augur ask --request -` itself is a valid command.
 
 Three design facts measured with Jev on labelled product-copy sentences, which is why the
 API has the shape it has:
@@ -82,6 +86,7 @@ import json
 import math
 import os
 import select
+import shlex
 import subprocess
 import sys
 import threading
@@ -137,8 +142,8 @@ MANIFEST_SCHEMA = {
     "additionalProperties": False,
     "properties": {
         "$schema": {"type": "string", "description": "Editor hint only; ignored by Augur."},
-        "backend": {"type": "string", "description": "The default backend: jev or laya. "
-                    "AUGUR_BACKEND and --backend override it."},
+        "backend": {"type": "string", "description": "The default backend: jev, laya, or the name of a "
+                    "command backend under `backends`. AUGUR_BACKEND and --backend override it."},
         "backends": {
             "type": "object",
             "description": "Per-backend settings, merged over the defaults.",
@@ -156,7 +161,14 @@ MANIFEST_SCHEMA = {
                     "head_max_len": {"type": "integer"},
                     "price_per_mtok": _PRICE}},
             },
-            "additionalProperties": {"type": "object"},
+            "additionalProperties": {"type": "object", "additionalProperties": False, "required": ["command"],
+                                     "description": "A command backend, named by its key.", "properties": {
+                "command": {"type": ["array", "string"], "items": {"type": "string"},
+                            "description": "The command: an argument list, or one string split as a shell would. "
+                                           "It reads {questions, state, model?} on stdin and prints {answers, model?, usage?}."},
+                "model": {"type": "string", "description": "Sent as `model` in every request; --model overrides it."},
+                "timeout": {"type": "number", "description": "Seconds to wait for an answer (default 60)."},
+                "price_per_mtok": _PRICE}},
         },
     },
 }
@@ -217,6 +229,8 @@ def _backend(name=None):
     name = name or m["backend"]
     if name not in m["backends"]:
         raise AugurUnavailable(f"unknown backend {name!r}; manifest knows {sorted(m['backends'])}")
+    if name not in BACKENDS and not m["backends"][name].get("command"):
+        raise AugurUnavailable(f"backend {name!r} names no `command`; only jev and laya are built in")
     return name, m["backends"][name]
 
 
@@ -378,7 +392,67 @@ def _laya_available(cfg):
         return False, str(e)
 
 
+# ---- backend: any command ------------------------------------------------------
+
+def _command_argv(cfg):
+    cmd = cfg["command"]
+    try:
+        argv = shlex.split(cmd) if isinstance(cmd, str) else [str(a) for a in cmd]
+    except ValueError as e:                 # an unbalanced quote in a hand-written manifest
+        raise AugurUnavailable(f"command backend: `command` does not parse ({e})") from e
+    if not argv:
+        raise AugurUnavailable("command backend: `command` is empty")
+    argv[0] = os.path.expanduser(argv[0])   # a manifest is not a shell: `~` would otherwise reach exec verbatim
+    return argv
+
+
+def _command_ask(cfg, state, questions, model, timeout, retries):
+    """`retries` does not apply, as for laya: a command that fails once fails the same way
+    again. The request is a valid `augur ask --request` object, so a wrapper can be tested
+    by piping the same JSON to it by hand."""
+    argv = _command_argv(cfg)
+    model = model or cfg.get("model")
+    wait = cfg.get("timeout") or timeout
+    req = {"questions": questions, "state": state, **({"model": model} if model else {})}
+    try:
+        # errors="replace": a stray non-UTF-8 byte would otherwise raise past every except here
+        out = subprocess.run(argv, input=json.dumps(req), capture_output=True, text=True,
+                             errors="replace", timeout=wait)
+    except subprocess.TimeoutExpired:
+        raise AugurUnavailable(f"command {argv[0]} gave no answer in {wait}s")
+    except OSError as e:
+        raise AugurUnavailable(f"command {argv[0]}: {e}") from e
+    if out.returncode != 0:
+        why = (out.stderr.strip().splitlines() or ["no message"])[-1][:200]
+        raise AugurUnavailable(f"command {argv[0]} exited {out.returncode}: {why}")
+    try:
+        resp = json.loads(out.stdout)
+    except ValueError as e:
+        raise AugurUnavailable(f"command {argv[0]} printed something that is not JSON: {out.stdout[:200]!r}") from e
+    if not isinstance(resp, dict) or not isinstance(resp.get("answers"), dict):
+        raise AugurUnavailable(f"unexpected response shape: {str(resp)[:200]}")
+    usage = resp.get("usage") if isinstance(resp.get("usage"), dict) else {}
+    return {"model": str(resp.get("model") or model or Path(argv[0]).name), "answers": resp["answers"],
+            "usage": {"input_tokens": int(usage.get("input_tokens") or 0)}}
+
+
+def _command_available(cfg):
+    """A real question, as laya's check asks: a command that starts is not yet one that answers."""
+    try:
+        r = _command_ask(cfg, {"text": "banana"}, {"fruit": noul("Is the word in `text` the name of a fruit?")},
+                         None, 60, 0)
+        _check_answers(r["answers"])
+        return True, f"{r['model']} answers"
+    except (AugurUnavailable, ValueError, OSError) as e:
+        return False, str(e)
+
+
 BACKENDS = {"jev": (_jev_ask, _jev_available), "laya": (_laya_ask, _laya_available)}
+
+
+def _adapter(name):
+    """(ask, available) for a backend name: a built-in, else the command adapter."""
+    return BACKENDS.get(name, (_command_ask, _command_available))
 
 
 # ---- public API --------------------------------------------------------------
@@ -389,7 +463,7 @@ def available(backend=None):
         name, cfg = _backend(backend)
     except AugurUnavailable as e:
         return False, str(e)
-    return BACKENDS[name][1](cfg)
+    return _adapter(name)[1](cfg)
 
 
 def _check_answers(answers):
@@ -425,7 +499,7 @@ def ask(state, questions, *, subject=None, siblings=None, backend=None, model=No
     if uid:
         state["uid"] = uuid.uuid4().hex
     name, cfg = _backend(backend)
-    resp = BACKENDS[name][0](cfg, state, questions, model, timeout, retries)
+    resp = _adapter(name)[0](cfg, state, questions, model, timeout, retries)
     _check_answers(resp["answers"])
     resp["backend"] = name
     _log(name, caller, resp["model"], len(questions), resp["usage"]["input_tokens"], float(cfg.get("price_per_mtok") or 0))
@@ -947,6 +1021,62 @@ def _selftest():
             schema_path = write_schema()
             expect(json.loads(schema_path.read_text())["$id"] == "augur.schema.json", "schema: not written")
 
+            # a command backend: a stand-in script, then `augur ask --request -` itself as the command
+            stand = Path(home) / "stand.py"
+            stand.write_text(
+                "import json, sys\n"
+                "mode = sys.argv[1]\n"
+                "req = json.load(sys.stdin)\n"
+                "open(sys.argv[2], 'w').write(json.dumps(req))\n"
+                "if mode == 'fail':\n    sys.stderr.write('boom\\n'); sys.exit(3)\n"
+                "if mode == 'prose':\n    print('I think it is a fruit'); sys.exit(0)\n"
+                "if mode == 'slow':\n    import time; time.sleep(5)\n"
+                "if mode == 'bytes':\n    sys.stdout.buffer.write(b'\\xff\\xfe'); sys.exit(0)\n"
+                "p = float('nan') if mode == 'nan' else 0.97 if 'banana' in json.dumps(req['state']) else 0.03\n"
+                "print(json.dumps({'answers': {q: {'type': 'noul', 'noul': p} for q in req['questions']},"
+                " 'usage': {'input_tokens': 10}}))\n")
+            seen = Path(home) / "seen.json"
+            me = [sys.executable, str(HERE / "augur.py")]
+
+            def cmd(mode):
+                return [sys.executable, str(stand), mode, str(seen)]
+            with open(Path(home) / "augur.json", "w") as f:
+                json.dump({"backends": {
+                    "stand": {"command": cmd("ok"), "price_per_mtok": 2.0},
+                    "named": {"command": " ".join(cmd("ok")), "model": "m1"},
+                    "fails": {"command": cmd("fail")}, "prose": {"command": cmd("prose")}, "nan": {"command": cmd("nan")},
+                    "slow": {"command": cmd("slow"), "timeout": 0.5}, "bytes": {"command": cmd("bytes")},
+                    "unquoted": {"command": "stand 'open"},
+                    "chain": {"command": me + ["ask", "--request", "-", "--backend", "stand", "--caller", "inner"]},
+                    "bare": {"price_per_mtok": 1.0}}}, f)
+            expect(manifest_findings() == ["augur.json: backends.bare: missing required key 'command'"],
+                   f"command backends: {manifest_findings()}")
+            ok, reason = available("stand")
+            expect(ok and "answers" in reason, f"command check: {reason}")
+            r = ask("banana", fruit, backend="stand", caller="cmd")
+            sent = json.loads(seen.read_text())
+            expect(r["backend"] == "stand" and r["answers"]["fruit"]["noul"] == 0.97, f"command ask: {r}")
+            expect(set(sent) == {"questions", "state"} and sent["state"]["text"] == "banana" and "fruit" in sent["questions"],
+                   f"command request: {sent}")
+            with open(Path(home) / "usage.csv") as f:
+                row = list(csv.reader(f))[-1]
+            expect(row[1:3] == ["stand", "cmd"] and row[5:] == ["10", "0.000020"], f"command ledger: {row}")
+            r = ask("banana", fruit, backend="named")
+            expect(json.loads(seen.read_text()).get("model") == "m1" and r["model"] == "m1",
+                   "command: a string command or its model not honoured")
+            r = ask("banana", fruit, backend="chain")
+            expect(r["answers"]["fruit"]["noul"] == 0.97, f"augur ask --request - as a command: {r}")
+            expect(_command_argv({"command": "~/x --flag"}) == [os.path.expanduser("~/x"), "--flag"], "command: ~ not expanded")
+            for name, fragment in (("fails", "exited 3: boom"), ("prose", "not JSON"), ("nan", "not a probability"),
+                                   ("bare", "names no `command`"), ("slow", "no answer in 0.5s"),
+                                   ("bytes", "not JSON"), ("unquoted", "does not parse")):
+                expect(unavailable(lambda: ask("banana", fruit, backend=name), fragment), f"command backend {name}")
+            with open(Path(home) / "augur.json", "w") as f:
+                json.dump({"backends": {"loose": {"comand": ["x"]}}}, f)
+            found = " | ".join(manifest_findings())
+            expect("unknown key 'comand', did you mean 'command'?" in found and "missing required key 'command'" in found,
+                   f"command manifest: {found}")
+
             ok, reason = available("laya")
             expect(not ok and "does not name an interpreter" in reason, f"laya without a venv: {reason}")
             expect(unavailable(lambda: ask("x", fruit, backend="nope"), "unknown backend"), "unknown backend accepted")
@@ -1149,7 +1279,7 @@ def main(argv):
     import argparse
     fmt = dict(formatter_class=argparse.RawDescriptionHelpFormatter)
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--backend", metavar="jev|laya", help="default from augur.json or AUGUR_BACKEND")
+    common.add_argument("--backend", metavar="NAME", help="default from augur.json or AUGUR_BACKEND")
     p = argparse.ArgumentParser(prog="augur", description=__doc__.split("\n\n")[0], epilog=EXAMPLES[None], **fmt)
     p.add_argument("--version", action="version", version=f"augur {__version__}")
     sub = p.add_subparsers(dest="cmd", title="commands", metavar="<command>")

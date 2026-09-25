@@ -12,6 +12,9 @@ Augur holds no questions. A project keeps each question file beside the rule it 
 
 - **jev** (default): TypeSafe's hosted System One model, priced per input token. The model is pinned in the manifest, because an alias moves without notice and a tuned threshold moves with it.
 - **laya**: Convai's open-weight ModernBERT model, local and free. By its makers' card it is a base to fine-tune rather than a zero-shot engine; on labelled product copy the base checkpoint measured near chance where Jev measured 0.99 AUROC. Use it when the user has fine-tuned it on their own items.
+- **any command**: an entry under `backends` with a `command` is a backend of the user's own, named by its key. The command reads one `augur ask --request`-shaped object on stdin (`questions`, `state`, and `model` when one is set) and prints `{"answers": ...}` in Augur's reply shape, with `model` and `usage.input_tokens` optional. Use it when the user runs a decision model of their own, local or hosted; it needs no TypeSafe key.
+
+Ask the user which backend they want before Step 2. Only `jev` needs a key.
 
 ## Step 1. Install the command
 
@@ -23,9 +26,9 @@ brew install jack-com/panoply/augur
 
 Spell the formula in full: homebrew-core has an unrelated cask named `augur`. Without Homebrew, `uv tool install git+https://github.com/JACK-COM/augur` does the same. Run `augur selftest`, which needs no network or key, and expect `selftest ok`.
 
-## Step 2. Store the key (the user's step)
+## Step 2. Store the key (the user's step, `jev` only)
 
-Ask the user for their TypeSafe API key, or to store it themselves. On macOS it goes in the keychain:
+Skip this step for `laya` or a command backend. For `jev`, ask the user for their TypeSafe API key, or to store it themselves. On macOS it goes in the keychain:
 
 ```
 security add-generic-password -a "$USER" -s TYPESAFE_API_KEY -w <key> -U
@@ -45,6 +48,14 @@ uv pip install --python ~/.augur-laya/bin/python laya torch
 ```json
 {"backend": "jev", "backends": {"laya": {"python": "~/.augur-laya/bin/python"}}}
 ```
+
+For a command backend, name it and make it the default:
+
+```json
+{"backend": "mine", "backends": {"mine": {"command": ["/abs/path/to/wrapper"], "price_per_mtok": 0}}}
+```
+
+`augur check --backend mine` asks the command one real question and reports whether it answered. Test a wrapper by hand by piping it a request: `echo '{"questions": {...}, "state": {"text": "banana"}}' | /abs/path/to/wrapper`.
 
 `AUGUR_BACKEND` in the environment overrides the manifest's default for one shell.
 
