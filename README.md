@@ -94,7 +94,7 @@ Run `augur check --live` after switching, and recalibrate: `augur calibrate item
 
 ## Requirements
 
-Python 3.9 or later, standard library only. The `jev` backend needs network access and a key; `laya` needs `laya` and `torch` in a separate virtualenv. The keychain lookup is macOS; elsewhere the key comes from `TYPESAFE_API_KEY`. Tested on macOS.
+Python 3.9 or later, standard library only. The `jev` backend needs network access and a key; `laya` needs `laya` and `torch` in a separate virtualenv. The keychain lookup is macOS; elsewhere the key comes from `TYPESAFE_API_KEY`. Tested on macOS and Linux (Debian, Python 3.12); on Windows, run it under WSL.
 
 ## Releasing
 
