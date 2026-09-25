@@ -57,7 +57,7 @@ augur check
 augur check --live
 ```
 
-`check` says whether the backend can answer at all. `--live` asks two questions with known answers and makes one billed call. Exit 3 means unavailable, with one line saying why. Nothing else the user runs should depend on this passing.
+`check` says whether the backend can answer at all. `--live` asks questions with known answers: two built-in ones in one billed call, or the user's own if `augur configure check` has set them, one call per item. Exit 3 means unavailable, with one line saying why. Nothing else the user runs should depend on this passing.
 
 ## Step 5. Calibrate before trusting a threshold
 

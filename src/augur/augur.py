@@ -51,7 +51,8 @@ API has the shape it has:
 Usage is appended per call to `usage.csv` in the Augur home (timestamp, backend, caller,
 model, questions, input tokens, USD at the backend's price; a local backend logs zero).
 
-    augur check [--backend B] [--live]           positive check; --live asks two known Nouls
+    augur check [--backend B] [--live]           positive check; --live asks known questions
+    augur configure check [FILE] [--reset]       the questions --live asks: yours, or two built-in
     augur ask -q questions.json (-t "text" | -s state.json) [--subject S] [--siblings A,B]
     augur calibrate items.json [--backend B] [--runs N] [--limit N] [--out DIR]
                                [--compare means.json] [--questions a,b]
@@ -550,8 +551,134 @@ def calibrate(spec, *, backend=None, runs=1, limit=None, questions=None, workers
 
 # ---- CLI ---------------------------------------------------------------------
 
+CHECK_MAX = 10          # a live check is a health probe, one billed call per item, never a calibration
+
+
+def _check_file():
+    return _home() / "check.json"
+
+
+def _check_spec(spec, threshold=0.5):
+    """A calibrate items file, checked for use as the live check -> the stored form.
+    Raises ValueError naming the first fault."""
+    if not isinstance(spec, dict):
+        raise ValueError("the file is not a JSON object")
+    qs, items = spec.get("questions"), spec.get("items")
+    if not isinstance(qs, dict) or not qs or not all(isinstance(q, dict) for q in qs.values()):
+        raise ValueError("`questions` must be a non-empty object of named questions (`augur ask -h` shows one)")
+    if not isinstance(items, list) or not 1 <= len(items) <= CHECK_MAX:
+        raise ValueError(f"`items` must list 1 to {CHECK_MAX} items; each is one billed call on every check")
+    if not (isinstance(threshold, (int, float)) and not isinstance(threshold, bool) and 0 < threshold < 1):
+        raise ValueError("the threshold must lie strictly between 0 and 1")
+    seen, kept = set(), []
+    for i, it in enumerate(items):
+        where = f"items[{i}]"
+        if not isinstance(it, dict) or not isinstance(it.get("id"), str) or not it["id"]:
+            raise ValueError(f"{where} needs a string `id`")
+        if it["id"] in seen:
+            raise ValueError(f"{where}: id {it['id']!r} appears twice")
+        seen.add(it["id"])
+        if not isinstance(it.get("text"), str) or not it["text"]:
+            raise ValueError(f"{where} needs a non-empty string `text`")
+        labels = it.get("labels")
+        if not isinstance(labels, dict) or not labels:
+            raise ValueError(f"{where} needs `labels`, {{question: true or false}}")
+        for q, v in labels.items():
+            if q not in qs or not isinstance(v, bool):
+                raise ValueError(f"{where}: label {q!r} must name a question and be true or false")
+            if qs[q].get("type") != "noul":
+                raise ValueError(f"{where}: label {q!r} names a {qs[q].get('type')!r} question; a live check "
+                                 f"grades nouls only")
+        if it.get("subject") is not None and not (isinstance(it["subject"], str) and it["subject"]):
+            raise ValueError(f"{where}: `subject` must be a non-empty string")
+        sib = it.get("siblings")
+        if sib is not None and not (isinstance(sib, list) and all(isinstance(x, str) for x in sib)):
+            raise ValueError(f"{where}: `siblings` must be a list of strings")
+        kept.append({k: it[k] for k in ("id", "text", "labels", "subject", "siblings") if k in it})
+    return {"threshold": threshold, "questions": qs, "items": kept}
+
+
+def _load_check():
+    """The configured live check, or None. Raises OSError or ValueError on a broken
+    check.json, which a hand edit can make."""
+    path = _check_file()
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text())
+    return _check_spec(raw, raw.get("threshold", 0.5) if isinstance(raw, dict) else 0.5)
+
+
+def _configure_check(file, threshold, reset):
+    path = _check_file()
+    if reset and (file is not None or threshold is not None):
+        print("--reset takes no file or threshold", file=sys.stderr)
+        return 2
+    if threshold is not None and file is None:
+        print("--threshold applies to a file being configured: augur configure check FILE --threshold P",
+              file=sys.stderr)
+        return 2
+    if reset:
+        if path.exists():
+            path.unlink()
+            print(f"removed {path}; `augur check --live` asks its two built-in questions again")
+        else:
+            print("no live check configured; `augur check --live` asks its two built-in questions")
+        return 0
+    if file is None:
+        try:
+            spec = _load_check()
+        except (OSError, ValueError) as e:
+            print(f"{path}: {e}; `augur configure check FILE` replaces it, `--reset` removes it", file=sys.stderr)
+            return 2
+        print(f"live check: {len(spec['items'])} items from {path}, threshold {spec['threshold']}" if spec
+              else "live check: the two built-in questions (fruit, fish)")
+        return 0
+    try:
+        spec = _check_spec(json.loads(Path(file).read_text()), 0.5 if threshold is None else threshold)
+    except (OSError, ValueError) as e:
+        print(f"{file}: {e}", file=sys.stderr)
+        return 2
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(spec, indent=1) + "\n")
+    tmp.replace(path)
+    print(f"live check: {len(spec['items'])} items, {len(spec['questions'])} question(s), threshold {spec['threshold']}, "
+          f"copied to {path}; `augur check --live` asks them, {len(spec['items'])} billed call(s)")
+    return 0
+
+
 def _live_check(backend):
-    """Two Nouls with known answers, one real call: the backend answers AND answers right."""
+    """Known questions with known answers, asked for real: the backend answers AND answers
+    right. The questions are the user's own from `augur configure check`, else two built-in
+    Nouls in one call."""
+    path = _check_file()
+    try:
+        spec = _load_check()
+    except (OSError, ValueError) as e:
+        print(f"{path}: {e}; `augur configure check FILE` replaces it, `--reset` removes it", file=sys.stderr)
+        return 2
+    if spec:
+        t, wrong, tokens, r = spec["threshold"], [], 0, None
+        for it in spec["items"]:
+            qs = {q: spec["questions"][q] for q in it["labels"]}
+            try:
+                r = ask(it["text"], qs, subject=it.get("subject"), siblings=it.get("siblings"),
+                        backend=backend, caller="check")
+            except AugurUnavailable as e:
+                print(f"unavailable: {e}", file=sys.stderr)
+                return 3
+            tokens += r["usage"]["input_tokens"]
+            for q, want in it["labels"].items():
+                a = r["answers"].get(q, {})
+                got = a.get("noul") if a.get("type") == "noul" else None
+                if got is None or (got >= t) != want:
+                    wrong.append(f"  {it['id']}.{q}: expected {'at or above' if want else 'below'} {t}, got {got}")
+        n = sum(len(it["labels"]) for it in spec["items"])
+        print(f"{'ok' if not wrong else 'wrong'}: {n - len(wrong)} of {n} answers right at {t}  backend {r['backend']}  "
+              f"model {r['model']}  tokens {tokens}  ({path})")
+        for w in wrong:
+            print(w)
+        return 0 if not wrong else 1
     q = {"fruit": noul("Is the word in `text` the name of a fruit?", true="a fruit", false="not a fruit"),
          "fish": noul("Is the word in `text` the name of a fish?", true="a fish", false="not a fish")}
     try:
@@ -732,6 +859,74 @@ def _selftest():
             except ValueError:
                 pass
 
+            stub.answer = lambda state, qid, q: 0.95 if "banana" in json.dumps(state) and qid in ("fruit",) else 0.05
+            items = Path(home) / "mine.json"
+            items.write_text(json.dumps({"questions": fruit, "items": [
+                {"id": "b", "text": "banana", "labels": {"fruit": True}},
+                {"id": "c", "text": "carrot", "labels": {"fruit": False}}]}))
+            quiet = contextlib.redirect_stdout(io.StringIO())
+            with quiet, contextlib.redirect_stderr(io.StringIO()):
+                codes = [main(["configure", "check", str(items)]), main(["check", "--live"])]
+                items.write_text(json.dumps({"questions": fruit, "items": [
+                    {"id": "c", "text": "carrot", "labels": {"fruit": True}}]}))
+                codes += [main(["check", "--live"]),                        # the copy, not the edited original
+                          main(["configure", "check", str(items)]), main(["check", "--live"])]
+                items.write_text(json.dumps({"questions": fruit, "items": [
+                    {"id": str(i), "text": "x", "labels": {"fruit": True}} for i in range(CHECK_MAX + 1)]}))
+                codes += [main(["configure", "check", str(items)]),
+                          main(["configure", "check", str(items), "--threshold", "1"])]
+                items.write_text(json.dumps({"questions": fruit, "items": [{"id": "b", "text": "banana",
+                                                                             "labels": {"frut": True}}]}))
+                codes += [main(["configure", "check", str(items)]), main(["configure", "check", "--reset"]),
+                          main(["check", "--live"])]
+            expect(codes == [0, 0, 0, 0, 1, 2, 2, 2, 0, 0], f"configure check / check --live exits: {codes}")
+            items.write_text(json.dumps({"questions": fruit, "items": [{"id": "b", "text": "banana",
+                                                                         "labels": {"fruit": True}}]}))
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown), contextlib.redirect_stderr(io.StringIO()):
+                codes = [main(["configure", "check"]), main(["configure", "check", str(items), "--threshold", "0.4"]),
+                         main(["configure", "check"]), main(["configure", "check", str(items), "--reset"]),
+                         main(["configure", "check", "--threshold", "0.4"])]
+                _check_file().write_text(json.dumps({"threshold": 0.5, "questions": fruit, "items": [
+                    {"id": "b", "text": "banana", "labels": {"fruit": True}, "siblings": 5}]}))
+                codes += [main(["check", "--live"]), main(["configure", "check", "--reset"])]
+            expect(codes == [0, 0, 0, 2, 2, 2, 0], f"configure check view, flag combinations, a hand-broken copy: {codes}")
+            expect("built-in" in shown.getvalue() and "1 items from" in shown.getvalue() and "threshold 0.4" in shown.getvalue(),
+                   "configure check with no file did not show the built-in pair, then the configured items")
+            one = [{"id": "b", "text": "banana", "labels": {"fruit": True}}]
+            for spec, t, fragment in (([], 0.5, "not a JSON object"), ({"questions": {}, "items": one}, 0.5, "`questions`"),
+                                      ({"questions": fruit, "items": one}, 1.0, "strictly between"),
+                                      ({"questions": fruit, "items": one * 2}, 0.5, "appears twice"),
+                                      ({"questions": fruit, "items": [{"id": "b", "text": "", "labels": {"fruit": True}}]},
+                                       0.5, "`text`"),
+                                      ({"questions": fruit, "items": [{**one[0], "subject": 3}]}, 0.5, "`subject`"),
+                                      ({"questions": fruit, "items": [{**one[0], "siblings": "a,b"}]}, 0.5, "`siblings`"),
+                                      ({"questions": {"kind": choice("Which?", {"a": None})},
+                                        "items": [{"id": "b", "text": "x", "labels": {"kind": True}}]}, 0.5, "nouls only")):
+                try:
+                    _check_spec(spec, t)
+                    expect(False, f"_check_spec accepted a spec lacking {fragment}")
+                except ValueError as e:
+                    expect(fragment in str(e), f"_check_spec: {e!r} does not name {fragment}")
+            expect(not _check_file().exists(), "--reset left check.json behind")
+
+            try:            # Augur's half of panoply-lib's scorer contract: accept its request, answer at its path
+                from . import _scorer_contract as contract
+            except ImportError:
+                import _scorer_contract as contract
+            saved_stdin, sys.stdin = sys.stdin, io.StringIO(json.dumps(contract.REQUEST))
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    code = main(["ask", "--request", "-", "--caller", "grille"])
+            finally:
+                sys.stdin = saved_stdin
+            try:
+                p = contract.probability(json.loads(out.getvalue()))
+                expect(code == 0 and 0 <= p <= 1, f"scorer contract: exit {code}, probability {p!r}")
+            except (KeyError, TypeError, ValueError) as e:
+                expect(False, f"scorer contract: the reply lacks {'.'.join(contract.REPLY_PATH)} ({e!r})")
+
             expect(abs(_auroc([0.9, 0.8], [0.1, 0.8]) - 0.875) < 1e-9, "auroc")
             stub.answer = lambda state, qid, q: 0.9 if "yes" in state["text"] else 0.1
             spec = {"name": "selftest", "questions": fruit,
@@ -865,7 +1060,8 @@ options; `score` lists ordered levels:
 EXAMPLES = {
     None: """examples:
   augur check                                  the backend answers and the key is found
-  augur check --live                           two known sentences, two known answers, one real call
+  augur check --live                           known questions, known answers, asked for real
+  augur configure check items.json             make those questions your own
   augur check --backend laya                   the same for the local backend
   augur ask -q closers.json -t "A four-seat single for an owner who flies IFR."
   augur calibrate items.json --out run-a/
@@ -882,11 +1078,22 @@ runs up to 20 items in one call. The manifest and the usage ledger live in ~/.au
     "check": """examples:
   augur check                                  the default backend (augur.json or AUGUR_BACKEND)
   augur check --backend laya                   the local backend; needs the venv INSTALL-augur.md names
-  augur check --live                           ask two known Nouls and check the answers, one billed call
+  augur check --live                           ask known questions and check the answers: your own from
+                                               `augur configure check`, else two built-in Nouls in one call
 
 Exit 0 and `ok:` when the backend answers; exit 3 and `unavailable: <reason>` otherwise.
 A misspelled or mistyped manifest key is printed first, prefixed `augur.json:`, and never changes the exit.
 """,
+    "configure": """examples:
+  augur configure check my-items.json          copy a calibrate items file of up to %d items as the live check
+  augur configure check my-items.json --threshold 0.3
+                                               a label is right at or above 0.3 for true, below it for false
+  augur configure check                        what `check --live` asks now
+  augur configure check --reset                back to the two built-in questions
+
+The file is copied to ~/.augur/check.json, so editing or deleting the original changes nothing.
+Every item is one billed call on each `augur check --live`.
+""" % CHECK_MAX,
     "schema": """examples:
   augur schema                                 write ~/.augur/augur.schema.json and say how to use it
 """,
@@ -950,7 +1157,14 @@ def main(argv):
     def cmd(name, help, **kw):
         return sub.add_parser(name, help=help, description=help, epilog=EXAMPLES[name], **fmt, **kw)
     k = cmd("check", "positive check for the backend", parents=[common])
-    k.add_argument("--live", action="store_true", help="ask two known Nouls and check the answers")
+    k.add_argument("--live", action="store_true",
+                   help="ask known questions and check the answers: yours from `augur configure check`, else two built-in")
+    f = cmd("configure", "set what `check --live` asks")
+    f.add_argument("what", choices=["check"])
+    f.add_argument("file", nargs="?", help="a calibrate items file (at most %d items) to copy as the live check" % CHECK_MAX)
+    f.add_argument("--threshold", type=float, metavar="P", help="a label is right when its answer is at or above P for "
+                   "true and below it for false (default 0.5)")
+    f.add_argument("--reset", action="store_true", help="remove the live check; the built-in questions return")
     a = cmd("ask", "one call; prints the response JSON", parents=[common])
     a.add_argument("-q", "--questions", metavar="FILE", help="JSON file: {name: question}")
     g = a.add_mutually_exclusive_group()
@@ -993,6 +1207,8 @@ def main(argv):
         return _install()
     if args.cmd == "uninstall":
         return _uninstall(args.yes, args.dry_run)
+    if args.cmd == "configure":
+        return _configure_check(args.file, args.threshold, args.reset)
     if args.cmd == "check":
         for finding in manifest_findings():
             print(finding)

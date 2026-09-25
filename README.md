@@ -32,6 +32,7 @@ augur check --live                            the backend answers, and answers r
 augur ask -q questions.json -t "some text"    one call; probabilities per question
 augur ask --request - < call.json             the same call as one JSON object on stdin
 augur calibrate items.json --out run-a/       AUROC and floor scores on your labelled items
+augur configure check items.json              make check --live ask your own questions
 augur selftest                                the client, offline
 ```
 
@@ -91,6 +92,8 @@ uv pip install --python ~/.augur-laya/bin/python laya torch
 `jev` takes `model` (the pinned version), `price_per_mtok` (for the usage ledger) and `keychain_service` or `env_key` (where to find the key). `laya` takes `python`, `checkpoint`, `device` (`cuda`, `mps` or `cpu`; unset lets Laya pick) and `head_max_len`. `--model` overrides the model or checkpoint for one call.
 
 Run `augur check --live` after switching, and recalibrate: `augur calibrate items.json --backend laya --compare run-a/means-jev.json` shows how far each item moved from the previous backend.
+
+`check --live` asks two built-in questions (is "banana" a fruit, is it a fish). To make it ask the questions you actually rely on, point it at a few items from your own calibration file: `augur configure check my-items.json` copies up to ten items to `~/.augur/check.json`, and `--threshold` sets where a true label must land (0.5 by default). Each item is one billed call per check; `augur configure check --reset` brings the built-in pair back.
 
 ## Requirements
 
