@@ -846,7 +846,7 @@ def _uninstall(yes, dry):
     if py and not str(Path(py).expanduser()).startswith(str(LAYA_VENV)):
         print(f"  a laya interpreter the manifest names elsewhere: {py}")
     if PACKAGED:
-        print("  the command:  brew uninstall augur   (or `uv tool uninstall augur`)")
+        print("  the command:  brew uninstall jack-com/panoply/augur   (or `uv tool uninstall augur`)")
     else:
         print(f"  the files:    rm {' '.join(str(HERE / n) for n in ('augur.py', 'augur_laya.py', 'INSTALL-augur.md'))}")
     return 0

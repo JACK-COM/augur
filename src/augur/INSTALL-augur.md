@@ -75,7 +75,7 @@ Tell the user, in five lines or fewer: the version (`augur --version`), the back
 
 ## Removal
 
-`augur uninstall` removes the laya virtualenv if one exists, asking once (`--yes` skips the question, `--dry-run` only prints), and then lists what it leaves: the keychain entry, `~/.augur`, and the command itself (`brew uninstall augur`).
+`augur uninstall` removes the laya virtualenv if one exists, asking once (`--yes` skips the question, `--dry-run` only prints), and then lists what it leaves: the keychain entry, `~/.augur`, and the command itself (`brew uninstall jack-com/panoply/augur`; the short name reaches homebrew-core's unrelated `augur` cask).
 
 ## What is not covered
 
