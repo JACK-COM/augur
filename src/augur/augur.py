@@ -1281,7 +1281,7 @@ def main(argv):
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--backend", metavar="NAME", help="default from augur.json or AUGUR_BACKEND")
     p = argparse.ArgumentParser(prog="augur", description=__doc__.split("\n\n")[0], epilog=EXAMPLES[None], **fmt)
-    p.add_argument("--version", action="version", version=f"augur {__version__}")
+    p.add_argument("-v", "-V", "--version", action="version", version=f"augur {__version__}")
     sub = p.add_subparsers(dest="cmd", title="commands", metavar="<command>")
 
     def cmd(name, help, **kw):
