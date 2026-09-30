@@ -1,0 +1,21 @@
+{
+  "backend": "jev",
+  "backends": {
+    "jev": {
+      "type": "systemone",
+      "url": "https://api.typesafe.ai/v1/systemone",
+      "model": "jev-1.13.0",
+      "price_per_mtok": 0.042,
+      "keychain_service": "TYPESAFE_API_KEY",
+      "env_key": "TYPESAFE_API_KEY"
+    },
+    "laya": {
+      "type": "laya",
+      "python": "",
+      "checkpoint": "convaiinnovations/laya",
+      "device": null,
+      "head_max_len": 512,
+      "price_per_mtok": 0.0
+    }
+  }
+}

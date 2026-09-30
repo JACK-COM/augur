@@ -22,4 +22,4 @@ Homepage = "https://github.com/JACK-COM/augur"
 version = {attr = "augur.augur.__version__"}
 
 [tool.setuptools.package-data]
-augur = ["INSTALL-augur.md"]
+augur = ["INSTALL-augur.md", "defaults.json"]

@@ -10,11 +10,14 @@ Augur holds no questions. A project keeps each question file beside the rule it 
 
 ## Backends
 
-- **jev** (default): TypeSafe's hosted System One model, priced per input token. The model is pinned in the manifest, because an alias moves without notice and a tuned threshold moves with it.
-- **laya**: Convai's open-weight ModernBERT model, local and free. By its makers' card it is a base to fine-tune rather than a zero-shot engine; on labelled product copy the base checkpoint measured near chance where Jev measured 0.99 AUROC. Use it when the user has fine-tuned it on their own items.
-- **any command**: an entry under `backends` with a `command` is a backend of the user's own, named by its key. The command reads one `augur ask --request`-shaped object on stdin (`questions`, `state`, and `model` when one is set) and prints `{"answers": ...}` in Augur's reply shape, with `model` and `usage.input_tokens` optional. Use it when the user runs a decision model of their own, local or hosted; it needs no TypeSafe key.
+A backend is a named entry under `backends` in the manifest, and its `type` says how Augur talks to it. Augur ships `jev` and `laya` as entries of the same shape the user writes, and the user's manifest merges over them.
 
-Ask the user which backend they want before Step 2. Only `jev` needs a key.
+- **jev** (default, type `systemone`): TypeSafe's hosted System One model, priced per input token. The model is pinned, because an alias moves without notice and a tuned threshold moves with it.
+- **a model Ollama serves** (type `systemone`): Ollama 0.35 and later serves decision models such as `nimble` on the same System One API, locally, with no key and no bill. Use it when the user wants a local model that answers well without training.
+- **laya** (type `laya`): Convai's open-weight ModernBERT model, local and free. By its makers' card it is a base to fine-tune rather than a zero-shot engine; on labelled product copy the base checkpoint measured near chance where Jev measured 0.99 AUROC. Use it when the user has fine-tuned it on their own items.
+- **any command** (type `command`): a script of the user's own reads one `augur ask --request`-shaped object on stdin (`questions`, `state`, and `model` when one is set) and prints `{"answers": ...}` in Augur's reply shape, with `model` and `usage.input_tokens` optional. Use it for a decision model that does not speak System One.
+
+Ask the user which backend they want before Step 2. Only a hosted backend needs a key.
 
 ## Step 1. Install the command
 
@@ -26,19 +29,33 @@ brew install jack-com/panoply/augur
 
 Spell the formula in full: homebrew-core has an unrelated cask named `augur`. Without Homebrew, `uv tool install git+https://github.com/JACK-COM/augur` does the same. Run `augur selftest`, which needs no network or key, and expect `selftest ok`.
 
-## Step 2. Store the key (the user's step, `jev` only)
+## Step 2. Store the key (the user's step, hosted backends only)
 
-Skip this step for `laya` or a command backend. For `jev`, ask the user for their TypeSafe API key, or to store it themselves. On macOS it goes in the keychain:
+Skip this step for Ollama, `laya` or a command backend. For `jev`, ask the user for their TypeSafe API key, or to store it themselves. On macOS it goes in the keychain:
 
 ```
 security add-generic-password -a "$USER" -s TYPESAFE_API_KEY -w <key> -U
 ```
 
-Elsewhere, export `TYPESAFE_API_KEY` from the shell profile. Never write the key into a repository, a manifest or a log, and never print it.
+Elsewhere, export `TYPESAFE_API_KEY` from the shell profile. Never write the key into a repository, a manifest or a log, and never print it. Another hosted System One provider takes the same steps under names of its own, which its entry gives as `keychain_service` and `env_key`.
 
 ## Step 3. Write the manifest, if anything differs
 
-The manifest is `~/.augur/augur.json`, or `augur.json` in `$AUGUR_HOME`. Only what differs from the defaults needs to be there. For the local backend:
+The manifest is `~/.augur/augur.json`, or `augur.json` in `$AUGUR_HOME`. Only what differs from the defaults needs to be there. Write `type` on every entry the user adds.
+
+For a model Ollama serves, check `ollama --version` is 0.35 or later, pull the model, and name it with no key fields, which sends no key:
+
+```
+ollama pull nimble
+```
+
+```json
+{"backend": "nimble", "backends": {"nimble": {"type": "systemone", "url": "http://localhost:11434/v1/systemone", "model": "nimble", "price_per_mtok": 0}}}
+```
+
+The first call after Ollama loads the model can be slow; if it times out, add `"timeout": 120` to the entry.
+
+For `laya`:
 
 ```
 uv venv --python 3.12 ~/.augur-laya
@@ -52,7 +69,7 @@ uv pip install --python ~/.augur-laya/bin/python laya torch
 For a command backend, name it and make it the default:
 
 ```json
-{"backend": "mine", "backends": {"mine": {"command": ["/abs/path/to/wrapper"], "price_per_mtok": 0}}}
+{"backend": "mine", "backends": {"mine": {"type": "command", "command": ["/abs/path/to/wrapper"], "price_per_mtok": 0}}}
 ```
 
 `augur check --backend mine` asks the command one real question and reports whether it answered. Test a wrapper by hand by piping it a request: `echo '{"questions": {...}, "state": {"text": "banana"}}' | /abs/path/to/wrapper`.
@@ -86,7 +103,7 @@ Tell the user, in five lines or fewer: the version (`augur --version`), the back
 
 ## Removal
 
-`augur uninstall` removes the laya virtualenv if one exists, asking once (`--yes` skips the question, `--dry-run` only prints), and then lists what it leaves: the keychain entry, `~/.augur`, and the command itself (`brew uninstall jack-com/panoply/augur`; the short name reaches homebrew-core's unrelated `augur` cask).
+`augur uninstall` removes the laya virtualenv if one exists, asking once (`--yes` skips the question, `--dry-run` only prints), and then lists what it leaves: each keychain entry a backend names, `~/.augur`, and the command itself (`brew uninstall jack-com/panoply/augur`; the short name reaches homebrew-core's unrelated `augur` cask).
 
 ## What is not covered
 
