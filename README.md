@@ -9,7 +9,7 @@
 
 *Know why you choose.* One piece of [the Panoply](https://github.com/JACK-COM/homebrew-panoply).
 
-Augur asks a decision model typed questions about a text and returns calibrated probabilities, with no generated text. An agent uses it to check a rule it can phrase as a literal question, such as "does this page address an AI agent", and `augur calibrate` measures the answers against examples you labelled yourself, so a threshold is something you measured. It informs and never blocks. The default backend is TypeSafe's hosted `jev`. A decision model Ollama serves, such as Nimble, takes three lines of settings because it speaks the same API; `laya` runs locally, and any other model answers through a script of your own.
+Augur asks a decision model typed questions about a text and returns calibrated probabilities, with no generated text. An agent uses it to check a rule it can phrase as a literal question, such as "does this page address an AI agent", and `augur calibrate` measures the answers against examples you labelled yourself, so a threshold is something you measured. It informs and never blocks. The default backend is TypeSafe's hosted `jev`. A decision model Ollama serves, such as Nimble, speaks the same API, so `augur configure backend` adds one in a few answers; `laya` runs locally, and any other model answers through a script of your own.
 
 **[Read the Augur guide](https://github.com/JACK-COM/homebrew-panoply/blob/main/docs/augur/README.md)**: when to use it, the first five minutes, the three question shapes, troubleshooting, and [how to make it yours](https://github.com/JACK-COM/homebrew-panoply/blob/main/docs/augur/make-it-yours.md), including bringing your own model.
 
@@ -23,7 +23,7 @@ brew install jack-com/panoply/augur
 
 The full name matters: homebrew-core has an unrelated cask called `augur`. Or with [uv](https://docs.astral.sh/uv/): `uv tool install git+https://github.com/JACK-COM/augur`.
 
-Then ask your agent to run `augur help install` and follow it. Only a hosted backend needs a key, such as a [TypeSafe](https://typesafe.ai) API key for `jev`.
+Then run `augur configure backend`, which asks where your model runs and checks it answers before saving it, or ask your agent to run `augur help install` and follow it. Only a hosted backend needs a key, such as a [TypeSafe](https://typesafe.ai) API key for `jev`, and `augur configure backend jev --store-key` stores it.
 
 ## Requirements
 

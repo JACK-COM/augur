@@ -29,56 +29,52 @@ brew install jack-com/panoply/augur
 
 Spell the formula in full: homebrew-core has an unrelated cask named `augur`. Without Homebrew, `uv tool install git+https://github.com/JACK-COM/augur` does the same. Run `augur selftest`, which needs no network or key, and expect `selftest ok`.
 
-## Step 2. Store the key (the user's step, hosted backends only)
+## Step 2. Add the backend
 
-Skip this step for Ollama, `laya` or a command backend. For `jev`, ask the user for their TypeSafe API key, or to store it themselves. On macOS it goes in the keychain:
+`augur configure backend` asks a backend one real question and writes its entry to `~/.augur/augur.json` (or `augur.json` in `$AUGUR_HOME`) only if it answers. A user at a terminal can run it with no arguments and answer its prompts. An agent uses the flags below, one command per backend. Only what differs from the shipped `jev` and `laya` entries is written.
 
-```
-security add-generic-password -a "$USER" -s TYPESAFE_API_KEY -w <key> -U
-```
-
-Elsewhere, export `TYPESAFE_API_KEY` from the shell profile. Never write the key into a repository, a manifest or a log, and never print it. Another hosted System One provider takes the same steps under names of its own, which its entry gives as `keychain_service` and `env_key`.
-
-## Step 3. Write the manifest, if anything differs
-
-The manifest is `~/.augur/augur.json`, or `augur.json` in `$AUGUR_HOME`. Only what differs from the defaults needs to be there. Write `type` on every entry the user adds.
-
-For a model Ollama serves, check `ollama --version` is 0.35 or later, pull the model, and name it with no key fields, which sends no key:
+For `jev`, nothing needs adding but the key. Ask the user to run this in their own terminal; in Claude Code they can type it after `!`:
 
 ```
-ollama pull nimble
+augur configure backend jev --store-key
 ```
 
-```json
-{"backend": "nimble", "backends": {"nimble": {"type": "systemone", "url": "http://localhost:11434/v1/systemone", "model": "nimble", "price_per_mtok": 0}}}
+On macOS, `security` prompts for the key, so it never appears as an argument, in shell history or in Augur's output. Elsewhere, the command prints the `export TYPESAFE_API_KEY=` line for the shell profile. Never ask for the key in conversation, and never write it into a repository, a manifest or a log.
+
+For a model Ollama serves, check `ollama --version` is 0.35 or later, then pull a sized tag and add it:
+
+```
+ollama pull nimble:9b-q8_0
+augur configure backend nimble --type systemone --url http://localhost:11434/v1/systemone --model nimble:9b-q8_0 --price 0 --default
 ```
 
-The first call after Ollama loads the model can be slow; if it times out, add `"timeout": 120` to the entry.
+Name the sized tag over `latest`, which moves when the library updates and takes a calibrated threshold with it. Ollama refuses a model that is not a decision model ("not supported by System One") and one never pulled ("not found"), and either refusal leaves nothing saved. The first call loads the model; if later calls time out, rerun with `--timeout 120`.
+
+For another hosted System One provider, give the command to the user to run, because `--store-key` prompts for their key before the entry is checked:
+
+```
+augur configure backend acme --type systemone --url https://api.acme.example/v1/systemone --model acme-2.1 --key-service ACME_API_KEY --key-env ACME_API_KEY --price 0.05 --store-key
+```
 
 For `laya`:
 
 ```
 uv venv --python 3.12 ~/.augur-laya
 uv pip install --python ~/.augur-laya/bin/python laya torch
+augur configure backend laya --python ~/.augur-laya/bin/python
 ```
 
-```json
-{"backend": "jev", "backends": {"laya": {"python": "~/.augur-laya/bin/python"}}}
+For a command backend:
+
+```
+augur configure backend mine --type command --command /abs/path/to/wrapper --price 0 --default
 ```
 
-For a command backend, name it and make it the default:
+Test a wrapper by hand first by piping it a request: `echo '{"questions": {...}, "state": {"text": "banana"}}' | /abs/path/to/wrapper`.
 
-```json
-{"backend": "mine", "backends": {"mine": {"type": "command", "command": ["/abs/path/to/wrapper"], "price_per_mtok": 0}}}
-```
+`--default` makes the backend the default, and `AUGUR_BACKEND` in the environment overrides that for one shell. `--force` saves an entry that did not answer. `augur configure backend --list` shows every backend, and `--remove NAME` removes one; on `jev` or `laya` that restores the shipped settings. The manifest stays plain JSON a user may edit by hand: `augur schema` writes `~/.augur/augur.schema.json` for an editor, and `augur check` names any misspelled or mistyped key.
 
-`augur check --backend mine` asks the command one real question and reports whether it answered. Test a wrapper by hand by piping it a request: `echo '{"questions": {...}, "state": {"text": "banana"}}' | /abs/path/to/wrapper`.
-
-`AUGUR_BACKEND` in the environment overrides the manifest's default for one shell.
-
-`augur schema` writes `~/.augur/augur.schema.json`; point the editor at it for completion, and `augur check` names any misspelled or mistyped key.
-
-## Step 4. Prove it answers
+## Step 3. Prove it answers
 
 ```
 augur check
@@ -87,7 +83,7 @@ augur check --live
 
 `check` says whether the backend can answer at all. `--live` asks questions with known answers: two built-in ones in one billed call, or the user's own if `augur configure check` has set them, one call per item. Exit 3 means unavailable, with one line saying why. Nothing else the user runs should depend on this passing.
 
-## Step 5. Calibrate before trusting a threshold
+## Step 4. Calibrate before trusting a threshold
 
 A backend earns a threshold by a measured run on the user's own labelled items, never by a published number. Write an items file (the format is in `augur calibrate -h`), then:
 
@@ -97,7 +93,7 @@ augur calibrate items.json --out runs/
 
 Read the AUROC, the lowest positive and the highest negative per question. A threshold read from one backend does not transfer to another. After a backend or client change, `--compare` against the prior run's per-item means shows whether the instrument moved.
 
-## Step 6. Report
+## Step 5. Report
 
 Tell the user, in five lines or fewer: the version (`augur --version`), the backend, whether `check --live` passed, where the manifest and the usage ledger live (`~/.augur/usage.csv` records every call's tokens and cost), and anything left for them to do.
 

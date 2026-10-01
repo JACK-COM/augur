@@ -33,8 +33,8 @@ rule; the default backend comes from there, then `AUGUR_BACKEND`, then `backend=
              one (`keychain_service`, then `env_key`). The shipped `jev` entry is this type
              with the model pinned (an alias moves without notice and a tuned threshold
              moves with it) and its key in the macOS keychain service `TYPESAFE_API_KEY`
-             (`security add-generic-password -a "$USER" -s TYPESAFE_API_KEY -w <key> -U`),
-             the same variable in the environment as fallback. Never in a repo, never printed.
+             (`augur configure backend jev --store-key`, where `security` prompts for it), the
+             same variable in the environment as fallback. Never in a repo, never printed.
   laya       Convai's open-weight ModernBERT decision model, run locally through
              `augur_laya.py` inside a virtualenv holding `laya` and `torch`; the entry
              names that interpreter. Free and fast, and by its makers' own card a base to
@@ -64,6 +64,8 @@ Usage is appended per call to `usage.csv` in the Augur home (timestamp, backend,
 model, questions, input tokens, USD at the backend's price; a local backend logs zero).
 
     augur check [--backend B] [--live]           positive check; --live asks known questions
+    augur configure backend [NAME] [--type T --url U --model M ...] [--list] [--remove NAME]
+                                                 add or change a backend: guided in a terminal, by flags anywhere
     augur configure check [FILE] [--reset]       the questions --live asks: yours, or two built-in
     augur ask -q questions.json (-t "text" | -s state.json) [--subject S] [--siblings A,B]
     augur calibrate items.json [--backend B] [--runs N] [--limit N] [--out DIR]
@@ -90,16 +92,20 @@ mean absolute difference against a prior run's per-item means, which is how a ba
 change or a client change is shown not to have moved the instrument.
 """
 import csv
+import getpass
 import json
 import math
 import os
+import re
 import select
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -233,6 +239,10 @@ class AugurUnavailable(RuntimeError):
     pass
 
 
+class NoKey(AugurUnavailable):
+    """An entry names where its key lives and nothing is there."""
+
+
 class BatchTooLarge(ValueError):
     pass
 
@@ -257,10 +267,17 @@ def _type(entry, default=None):
     return entry.get("type") or (default or {}).get("type") or ("command" if entry.get("command") else None)
 
 
+def _merged(base, cfg, default=None):
+    """The manifest's one rule: `cfg` merges over `base`, unless it names a type other than
+    base's (resolved through `default`), which replaces base whole so no key of the old type
+    lingers."""
+    if cfg.get("type") and cfg["type"] != _type(base, default):
+        base = {}
+    return {**base, **cfg}
+
+
 def _manifest():
-    """The shipped defaults, then augur.json over them by one rule: an entry merges over the
-    default of the same name, unless it names a different type, which replaces it whole so no
-    key of the old type lingers. Then AUGUR_BACKEND."""
+    """The shipped defaults, then augur.json over them by `_merged`'s rule. Then AUGUR_BACKEND."""
     m = _defaults()
     p = _home() / "augur.json"
     if p.exists():
@@ -272,11 +289,7 @@ def _manifest():
         if "backend" in user:
             m["backend"] = user["backend"]
         for name, cfg in (user.get("backends") or {}).items():
-            cfg = cfg or {}
-            base = m["backends"].get(name) or {}
-            if cfg.get("type") and cfg["type"] != base.get("type"):
-                base = {}
-            m["backends"][name] = {**base, **cfg}
+            m["backends"][name] = _merged(m["backends"].get(name) or {}, cfg or {})
     if os.environ.get("AUGUR_BACKEND"):
         m["backend"] = os.environ["AUGUR_BACKEND"]
     return m
@@ -289,6 +302,11 @@ def _backend(name=None):
     if name not in m["backends"]:
         raise AugurUnavailable(f"unknown backend {name!r}; manifest knows {sorted(m['backends'])}")
     cfg = m["backends"][name]
+    return name, cfg, _resolve(name, cfg)
+
+
+def _resolve(name, cfg):
+    """A merged entry's type, once it names one Augur speaks and every key that type requires."""
     t = _type(cfg)
     if t is None:
         raise AugurUnavailable(f"backend {name!r} names no `type`; give it one of {', '.join(sorted(BACKEND_TYPES))}")
@@ -297,7 +315,7 @@ def _backend(name=None):
     for k in BACKEND_TYPES[t].get("required", []):
         if not cfg.get(k):
             raise AugurUnavailable(f"backend {name!r} is a {t} backend with no `{k}`")
-    return name, cfg, t
+    return t
 
 
 # ---- questions ---------------------------------------------------------------
@@ -354,7 +372,7 @@ def _systemone_key(cfg):
     k = os.environ.get(env, "").strip() if env else ""
     if k:
         return k
-    raise AugurUnavailable("no key: " + " and ".join(
+    raise NoKey("no key: " + " and ".join(
         ([f"keychain service {service} empty"] if service else []) + ([f"{env} unset"] if env else [])))
 
 
@@ -516,11 +534,16 @@ def available(backend=None):
         name, cfg, t = _backend(backend)
     except AugurUnavailable as e:
         return False, str(e)
+    return _probe(name, cfg, t)
+
+
+def _probe(name, cfg, t, caller="check", timeout=60):
+    """`available` for a resolved entry, saved or not. -> (ok, reason)"""
     if ADAPTERS[t][1]:
         return ADAPTERS[t][1](cfg)
     try:          # a backend that starts is not yet one that answers
-        r = ask("banana", {"fruit": noul("Is the word in `text` the name of a fruit?")}, backend=name,
-                caller="check", retries=0)
+        r = _answer(name, cfg, t, {"text": "banana", "uid": uuid.uuid4().hex},
+                    {"fruit": noul("Is the word in `text` the name of a fruit?")}, None, timeout, 0, caller)
         return True, f"{r['model']} answers"
     except (AugurUnavailable, ValueError, OSError) as e:
         return False, str(e)
@@ -559,7 +582,15 @@ def ask(state, questions, *, subject=None, siblings=None, backend=None, model=No
     if uid:
         state["uid"] = uuid.uuid4().hex
     name, cfg, t = _backend(backend)
-    resp = ADAPTERS[t][0](cfg, state, questions, model, timeout, retries)
+    return _answer(name, cfg, t, state, questions, model, timeout, retries, caller)
+
+
+def _answer(name, cfg, t, state, questions, model, timeout, retries, caller):
+    """One checked, ledgered call to a resolved entry."""
+    try:
+        resp = ADAPTERS[t][0](cfg, state, questions, model, timeout, retries)
+    except NoKey as e:
+        raise NoKey(f"{e}; `augur configure backend {name} --store-key` stores one") from None
     _check_answers(resp["answers"])
     resp["backend"] = name
     _log(name, caller, resp["model"], len(questions), resp["usage"]["input_tokens"], float(cfg.get("price_per_mtok") or 0))
@@ -688,6 +719,15 @@ def calibrate(spec, *, backend=None, runs=1, limit=None, questions=None, workers
 CHECK_MAX = 10          # a live check is a health probe, one billed call per item, never a calibration
 
 
+def _write_json(path, obj, indent=2):
+    """Write whole or not at all: a reader never sees half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(obj, indent=indent) + "\n")
+    tmp.replace(path)
+    return path
+
+
 def _check_file():
     return _home() / "check.json"
 
@@ -772,10 +812,7 @@ def _configure_check(file, threshold, reset):
     except (OSError, ValueError) as e:
         print(f"{file}: {e}", file=sys.stderr)
         return 2
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(spec, indent=1) + "\n")
-    tmp.replace(path)
+    _write_json(path, spec, 1)
     print(f"live check: {len(spec['items'])} items, {len(spec['questions'])} question(s), threshold {spec['threshold']}, "
           f"copied to {path}; `augur check --live` asks them, {len(spec['items'])} billed call(s)")
     return 0
@@ -827,6 +864,501 @@ def _live_check(backend):
     return 0 if ok else 1
 
 
+# ---- configure backend -------------------------------------------------------
+
+# Flags that become entry keys, by the key each writes; the schema in BACKEND_TYPES checks them.
+ENTRY_FLAGS = ("type", "url", "model", "keychain_service", "env_key", "timeout", "price_per_mtok",
+               "python", "checkpoint", "device", "command")
+NAME_CHARS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+NAME_RULE = "a name takes letters, digits, '.', '_' and '-', starting with a letter or digit"
+VAR_CHARS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+OLLAMA_MIN = (0, 35)            # the first Ollama release serving /v1/systemone
+PROBE_TIMEOUT = 300             # the first call after Ollama loads a model can take minutes; never written
+
+
+def _user_manifest():
+    """augur.json as the user wrote it, {} when absent. Raises ValueError when it does not parse."""
+    p = _home() / "augur.json"
+    if not p.exists():
+        return {}
+    raw = json.loads(p.read_text())
+    if not isinstance(raw, dict):
+        raise ValueError(f"{p}: not a JSON object")
+    b = raw.setdefault("backends", {})
+    if b is None:
+        raw["backends"] = b = {}
+    if not isinstance(b, dict) or not all(isinstance(e, dict) for e in b.values()):
+        raise ValueError(f"{p}: `backends` must be an object of entries; `augur check` names the fault")
+    return raw
+
+
+def _origin(name, user, shipped):
+    if name not in shipped:
+        return "yours"
+    if name not in user:
+        return "shipped"
+    same = _type(user[name], shipped[name]) == shipped[name].get("type")
+    return "shipped, changed" if same else "yours, replaces shipped"
+
+
+def _describe(cfg, t):
+    if t == "systemone":
+        return f"{cfg.get('model') or '(the server default)'} at {cfg.get('url')}"
+    if t == "laya":
+        return f"{cfg.get('checkpoint')} via {cfg.get('python') or '(no interpreter named)'}"
+    c = cfg.get("command", "")
+    return c if isinstance(c, str) else shlex.join(str(a) for a in c)
+
+
+def _list_backends():
+    m, user, shipped = _manifest(), _user_manifest().get("backends") or {}, _defaults()["backends"]
+    rows = [(("*" if n == m["backend"] else " ") + " " + n, _type(c) or "?", _origin(n, user, shipped),
+             _describe(c, _type(c))) for n, c in sorted(m["backends"].items())]
+    w = [max(len(r[i]) for r in rows) for i in range(3)]
+    for r in rows:
+        print(f"{r[0]:<{w[0]}}  {r[1]:<{w[1]}}  {r[2]:<{w[2]}}  {r[3]}")
+    print("\n* the default. `augur configure backend` adds one, `augur configure backend NAME --default`\n"
+          "makes one the default, and `--remove NAME` takes yours away.")
+    return 0
+
+
+def _show_backend(name):
+    """One backend as Augur runs it, for a program or a reader without a terminal."""
+    m, user, shipped = _manifest(), _user_manifest().get("backends") or {}, _defaults()["backends"]
+    if name not in m["backends"]:
+        print(f"no backend named {name!r}; `augur configure backend --list` shows them", file=sys.stderr)
+        return 2
+    cfg = m["backends"][name]
+    print(json.dumps({"name": name, "type": _type(cfg), "origin": _origin(name, user, shipped),
+                      "default": name == m["backend"], "settings": cfg}, indent=2))
+    return 0
+
+
+def _remove_backend(name):
+    user = _user_manifest()
+    shipped = _defaults()["backends"]
+    b = user.get("backends") or {}
+    if name not in b:
+        if name in shipped:
+            print(f"{name} runs on the shipped settings; there are none of yours to remove")
+            return 0
+        print(f"no backend named {name!r} in {_home() / 'augur.json'}", file=sys.stderr)
+        return 2
+    del b[name]
+    said = f"removed {name}"
+    if name in shipped:
+        said += f"; {name} runs on the shipped settings again"
+    elif user.get("backend") == name:
+        del user["backend"]
+        said += f"; it was the default, which is {_defaults()['backend']} again"
+    print(f"{said} ({_write_json(_home() / 'augur.json', user)})")
+    return 0
+
+
+def _check_url(url):
+    """A key belongs in the keychain or the environment, where Augur never prints it; a URL is
+    printed by --list, so one carrying a password or a query string is refused."""
+    u = urllib.parse.urlparse(url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise ValueError(f"--url {url!r} is not an http(s) address")
+    if u.username or u.password or u.query:
+        raise ValueError("--url may not carry a username, password or query string; give the key with "
+                         "--key-service or --key-env, and Augur sends it as a header")
+
+
+def _set_default(user, name):
+    """Point `backend` at NAME in USER (augur.json's contents, written by the caller)."""
+    user["backend"] = name
+    if os.environ.get("AUGUR_BACKEND", name) != name:
+        print(f"AUGUR_BACKEND={os.environ['AUGUR_BACKEND']} in this environment still wins over the default")
+
+
+def _build_entry(name, given, replace=False):
+    """The entry augur.json would hold for NAME, and the merged entry Augur would run.
+    `given` merges over the user's present entry by the manifest's own rule, or replaces it
+    when `replace`. Raises ValueError naming the first fault."""
+    if not NAME_CHARS.fullmatch(name):
+        raise ValueError(NAME_RULE)
+    if "url" in given:
+        _check_url(given["url"])
+    shipped = _defaults()["backends"]
+    have = (_user_manifest().get("backends") or {}).get(name) or {}
+    entry = dict(given) if replace else _merged(have, given, shipped.get(name))
+    found = _entry_findings({"backends": {name: entry}}, shipped)
+    if found:
+        raise ValueError("; ".join(f.split(": ", 1)[-1] for f in found))
+    run = _merged(shipped.get(name) or {}, entry)
+    try:
+        return entry, run, _resolve(name, run)
+    except AugurUnavailable as e:
+        raise ValueError(str(e)) from None
+
+
+def _store_key(name, cfg):
+    """Put the key where the entry looks for it. On macOS `security` prompts for it itself, so
+    the key is never an argument, never in shell history and never in Augur's output; Augur
+    takes no key by flag at all. Elsewhere, say which variable to export."""
+    service, env = cfg.get("keychain_service"), cfg.get("env_key")
+    if not service and not env:
+        print(f"{name} names no `keychain_service` or `env_key`, so it sends no key; give it --key-service "
+              f"or --key-env first", file=sys.stderr)
+        return 2
+    if service and sys.platform == "darwin" and shutil.which("security"):
+        if not sys.stdin.isatty():
+            print(f"storing a key needs a terminal, where `security` prompts for it. Or run:\n"
+                  f"  security add-generic-password -a \"$USER\" -s {service} -U -w", file=sys.stderr)
+            return 2
+        print(f"Paste the key at the prompt, then again to confirm; nothing echoes. "
+              f"It goes in the keychain as {service}.")
+        r = subprocess.run(["security", "add-generic-password", "-a", getpass.getuser(), "-s", service, "-U", "-w"])
+        if r.returncode:
+            print(f"security exited {r.returncode}; no key stored", file=sys.stderr)
+            return 3
+        return 0
+    if not env:
+        print(f"{name} keeps its key in the macOS keychain only; give it --key-env to read one from the "
+              f"environment here", file=sys.stderr)
+        return 2
+    print(f"Add this to your shell profile, with your key, and open a new shell:\n  export {env}=<your key>")
+    return 0
+
+
+def _save_backend(name, given, *, replace=False, make_default=False, force=False, store_key=False, confirm=None):
+    """Verify, then write: the entry is saved only when it answers one real question, unless
+    `force` (or, guided, the user) says to save it anyway. `confirm(prompt) -> bool` asks the
+    user; None means a script is driving and the flags decide."""
+    try:
+        entry, run, t = _build_entry(name, given, replace)
+    except (ValueError, AugurUnavailable) as e:
+        print(f"{name}: {e}", file=sys.stderr)
+        return 2
+    if store_key:
+        code = _store_key(name, run)
+        if code:
+            return code
+    print(f"asking {name} one question" + (" (a model loading for the first time can take a minute)"
+                                           if t == "systemone" and not (run.get("keychain_service") or run.get("env_key"))
+                                           else ""), flush=True)
+    began = time.monotonic()
+    ok, reason = _probe(name, run, t, caller="configure", timeout=PROBE_TIMEOUT)
+    took = time.monotonic() - began
+    if ok and took > 45 and not run.get("timeout") and t != "laya":
+        print(f"that took {took:.0f}s; calls wait 60s, so if a cold model times out later, "
+              f"`augur configure backend {name} --timeout 180` raises it")
+    if ok:
+        print(f"ok: {reason}")
+    else:
+        print(f"unavailable: {reason}", file=sys.stderr)
+        if not (force or (confirm and confirm(f"{name} did not answer. Save it anyway?"))):
+            print(f"{name} not saved; fix that and run this again, or add --force to save it unverified",
+                  file=sys.stderr)
+            return 3
+    user = _user_manifest()
+    user.setdefault("backends", {})[name] = entry
+    current = _manifest()["backend"]
+    if not make_default and confirm and current != name:
+        make_default = confirm(f"Make {name} the default backend? It is {current} now.")
+    if make_default:
+        _set_default(user, name)
+    print(f"saved {name}, a {t} backend{'' if ok else ' that has not answered'}"
+          f"{', as the default' if make_default else ''} ({_write_json(_home() / 'augur.json', user)})")
+    print(f"before a threshold means anything on it, measure it:  augur calibrate items.json --backend {name} "
+          f"--out run-{name}/")
+    return 0
+
+
+# -- guided: the same save, its settings asked for in a terminal --
+
+def _positive(v):
+    """argparse type: a finite number above zero, so `nan` never reaches the JSON and `0` never
+    reads as unset."""
+    import argparse
+    try:
+        f = float(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{v!r} is not a number")
+    if not (math.isfinite(f) and f > 0):
+        raise argparse.ArgumentTypeError(f"{v!r} must be a finite number above zero")
+    return f
+
+
+def _price(v):
+    """argparse type: a finite price, zero for a backend with no bill."""
+    return 0.0 if v.strip() in ("0", "0.0") else _positive(v)
+
+
+def _prompt(text, default=None):
+    a = input(f"{text}{f' [{default}]' if default else ''}: ").strip()
+    return a or default
+
+
+def _yes(text, default=False):
+    a = input(f"{text} [{'Y/n' if default else 'y/N'}] ").strip().lower()
+    return a in ("y", "yes") if a else default
+
+
+def _choose(text, options):
+    print(text)
+    for i, o in enumerate(options, 1):
+        print(f"  {i}) {o}")
+    while True:
+        a = input("> ").strip()
+        if a.isdigit() and 1 <= int(a) <= len(options):
+            return int(a) - 1
+        print(f"enter a number from 1 to {len(options)}")
+
+
+def _ollama_base():
+    h = (os.environ.get("OLLAMA_HOST") or "localhost:11434").rstrip("/")
+    h = h if "://" in h else "http://" + h
+    return h.replace("://0.0.0.0", "://localhost")      # a bind-all address, which a client cannot dial
+
+
+def _get_json(url, timeout=10):
+    with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as r:
+        return json.load(r)
+
+
+def _ollama_models(base):
+    """Ollama's pulled models, each a dict with a string `name`. Raises ValueError on another shape."""
+    models = _get_json(base + "/api/tags").get("models") or []
+    if not isinstance(models, list) or not all(isinstance(m, dict) and isinstance(m.get("name"), str) for m in models):
+        raise ValueError("/api/tags: not a list of models")
+    return models
+
+
+def _ollama_pull(base, model):
+    """Pull through Ollama's API, printing its progress on one line."""
+    req = urllib.request.Request(base + "/api/pull", data=json.dumps({"model": model}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            for line in r:
+                if not line.strip():
+                    continue
+                ev = json.loads(line)
+                if ev.get("error"):
+                    raise AugurUnavailable(ev["error"])
+                total, done = ev.get("total"), ev.get("completed")
+                msg = ev.get("status", "") + (f" {done * 100 // total}%" if total and done else "")
+                print("\r" + msg[:72].ljust(72), end="", flush=True)
+    except urllib.error.HTTPError as e:
+        raise AugurUnavailable(f"HTTP {e.code}: {e.read().decode(errors='ignore')[:300]}") from e
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise AugurUnavailable(f"pull: {e}") from e
+    finally:
+        print()
+
+
+def _others(n):
+    return "" if not n else " (1 other model is not)" if n == 1 else f" ({n} other models are not)"
+
+
+def _exact_tag(tag, models):
+    """`:latest` moves when the library updates, and a threshold calibrated on it moves too;
+    another local tag of the same digest names the build itself."""
+    if not tag.endswith(":latest"):
+        return tag
+    digest = next((m.get("digest") for m in models if m.get("name") == tag), None)
+    return next((m["name"] for m in models if digest and m.get("digest") == digest and m["name"] != tag), tag)
+
+
+def _guided_ollama():
+    """-> (settings, suggested name), or None after saying why not."""
+    base = _ollama_base()
+    try:
+        v = str(_get_json(base + "/api/version")["version"])
+        models = _ollama_models(base)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"Ollama is not answering at {base} ({e}). Start it (open the app, or run `ollama serve`) and "
+              f"run this again; https://ollama.com/download has it.", file=sys.stderr)
+        return None
+    if tuple(int(x) for x in re.findall(r"\d+", v)[:2]) < OLLAMA_MIN:
+        print(f"Ollama {v} is too old: decision models need {'.'.join(map(str, OLLAMA_MIN))} or later. "
+              f"Upgrade it and run this again.", file=sys.stderr)
+        return None
+    # Ollama marks a decision model with a `decision` capability, so the menu is the server's
+    # word, never a list of names here; a server listing no capabilities shows every model.
+    shown = [m for m in models if "decision" in (m.get("capabilities") or ["decision"])]
+    i = len(shown)
+    if shown:
+        others = len(models) - len(shown)
+        i = _choose(f"Ollama {v} has these decision models{_others(others)}. "
+                    f"Which one?", [f"{m['name']}  ({(m.get('size') or 0) / 1e9:.1f} GB)" for m in shown]
+                    + ["another, pulled by name"])
+    if i == len(shown):
+        tag = _prompt("Model to pull, by its tag on ollama.com/library (a sized tag pins the build)")
+        if not tag:
+            return None
+        tag = tag if ":" in tag else tag + ":latest"
+        try:
+            _ollama_pull(base, tag)
+            models = _ollama_models(base)
+        except (AugurUnavailable, OSError, ValueError, KeyError, TypeError) as e:
+            print(f"pull {tag}: {e}", file=sys.stderr)
+            return None
+    else:
+        tag = shown[i]["name"]
+    exact = _exact_tag(tag, models)
+    if exact.endswith(":latest"):
+        print(f"{exact} moves when the library updates, and a calibrated threshold moves with it. To pin it, "
+              f"`ollama cp {exact} {exact[:-7]}:<tag>` with the sized tag ollama.com/library lists, then run this again.")
+    suggested = re.sub(r"[^A-Za-z0-9._-]", "-", exact.split(":")[0].rsplit("/", 1)[-1]).lstrip("._-")
+    return {"type": "systemone", "url": base + "/v1/systemone", "model": exact, "price_per_mtok": 0.0}, suggested or "ollama"
+
+
+def _guided_hosted():
+    url = _prompt("The System One endpoint, e.g. https://api.example.com/v1/systemone")
+    try:
+        _check_url(url or "")
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return None
+    s = {"type": "systemone", "url": url}
+    model = _prompt("The model to ask; pin a version where the host lists one (blank: the host's default)")
+    if model:
+        s["model"] = model
+    price = _prompt("USD per million input tokens, for the usage ledger", "0")
+    try:
+        s["price_per_mtok"] = _price(price)
+    except Exception:  # noqa: argparse's error type; any bad price records 0
+        print(f"{price!r} is not a number; the ledger records 0")
+        s["price_per_mtok"] = 0.0
+    host = urllib.parse.urlparse(url).hostname or "hosted"
+    parts = host.split(".")
+    return s, parts[-2] if len(parts) > 1 else parts[0]
+
+
+def _guided_laya():
+    venv_py = LAYA_VENV / "bin" / "python"
+    py = _prompt("The python of a virtualenv holding laya and torch (`augur help install` makes one)",
+                 str(venv_py) if venv_py.exists() else None)
+    if not py:
+        return None
+    s = {"type": "laya", "python": py}
+    ck = _prompt("Checkpoint; a fine-tune goes here", _defaults()["backends"]["laya"]["checkpoint"])
+    if ck != _defaults()["backends"]["laya"]["checkpoint"]:
+        s["checkpoint"] = ck
+    return s, "laya"
+
+
+def _guided_command():
+    c = _prompt("The command. It reads one `augur ask --request` object on stdin and prints "
+                "{answers}; `augur ask -h` shows the shape")
+    if not c:
+        return None
+    s = {"type": "command", "command": c}
+    model = _prompt("A model name to send with every request (blank: none)")
+    if model:
+        s["model"] = model
+    try:
+        return s, Path(shlex.split(c)[0]).stem
+    except (ValueError, IndexError):        # an unbalanced quote: the check below names the fault
+        return s, "script"
+
+
+def _guided_backend(name=None):
+    """Add or replace a backend in a terminal, by the same verify-then-write as the flags."""
+    try:
+        kind = _choose("Where does the model run?", ["Ollama, on this machine (no key, no bill)",
+                                                     "a hosted System One API, with an API key",
+                                                     "Laya, in a Python virtualenv",
+                                                     "a script of your own"])
+        got = (_guided_ollama, _guided_hosted, _guided_laya, _guided_command)[kind]()
+        if got is None:
+            return 3 if kind == 0 else 2
+        settings, suggested = got
+        while True:
+            name = name or _prompt("A name for this backend", suggested)
+            if name and NAME_CHARS.fullmatch(name):
+                break
+            print(NAME_RULE)
+            name = None
+        known = _manifest()["backends"]
+        shipped = _defaults()["backends"].get(name)
+        if shipped and shipped.get("type") == settings["type"]:
+            left = sorted(set(shipped) - set(settings) - {"type"})
+            print(f"{name} is shipped; what you leave out keeps its shipped value ({', '.join(left)})")
+        if name in known and not _yes(f"{name} exists ({_type(known[name])}, {_describe(known[name], _type(known[name]))}). "
+                                      f"Replace it?"):
+            print("augur.json unchanged")
+            return 1
+        store = False
+        if kind == 1:
+            var = _prompt("Where to keep the key: a keychain service and environment variable name",
+                          re.sub(r"\W", "_", name).upper() + "_API_KEY")
+            while not VAR_CHARS.fullmatch(var or ""):
+                var = _prompt("Letters, digits and '_', not starting with a digit")
+            settings["env_key"] = var
+            if sys.platform == "darwin":
+                settings["keychain_service"] = var
+                store = _yes(f"Store the key in the keychain as {var} now? `security` prompts for it.", True)
+            else:
+                k = getpass.getpass(f"Paste the key to check {name} now (not echoed, not saved): ")
+                if k:
+                    os.environ[var] = k
+                print(f"To keep it, add this to your shell profile:  export {var}=<your key>")
+        return _save_backend(name, settings, replace=True, store_key=store, confirm=_yes)
+    except (EOFError, KeyboardInterrupt):
+        print("\naugur.json unchanged")
+        return 1
+
+
+def _configure_backend(args):
+    given = {k: getattr(args, k) for k in ENTRY_FLAGS if getattr(args, k) is not None}
+    acted = bool(given or args.default or args.force or args.store_key)
+    try:
+        if args.list or args.remove is not None:
+            if args.name or acted or (args.list and args.remove is not None):
+                print("--list and --remove NAME stand alone", file=sys.stderr)
+                return 2
+            return _list_backends() if args.list else _remove_backend(args.remove)
+        terminal = sys.stdin.isatty() and sys.stdout.isatty()
+        if not acted:
+            if terminal:
+                return _guided_backend(args.name)
+            return _show_backend(args.name) if args.name else _list_backends()
+        if not args.name:
+            print("name the backend: augur configure backend NAME --type ...", file=sys.stderr)
+            return 2
+        if given:
+            return _save_backend(args.name, given, make_default=args.default, force=args.force,
+                                 store_key=args.store_key)
+        if args.name not in _manifest()["backends"]:
+            print(f"no backend named {args.name!r}; `augur configure backend --list` shows them", file=sys.stderr)
+            return 2
+        name, cfg, t = _backend(args.name)          # an existing backend: a key, the default, or both
+        if args.force:
+            print("--force saves settings; give some, or drop it", file=sys.stderr)
+            return 2
+        if args.store_key:
+            code = _store_key(name, cfg)
+            if code:
+                return code
+            ok, reason = _probe(name, cfg, t, caller="configure", timeout=PROBE_TIMEOUT)
+            print(("ok: " if ok else "unavailable: ") + reason)
+            if not ok:
+                return 3
+        if args.default:
+            user = _user_manifest()
+            _set_default(user, name)
+            print(f"{name} is the default ({_write_json(_home() / 'augur.json', user)}); "
+                  f"`augur check` asks it a question")
+        return 0
+    except ValueError as e:
+        print(f"augur.json: {e}", file=sys.stderr)
+        return 2
+    except AugurUnavailable as e:
+        print(f"unavailable: {e}", file=sys.stderr)
+        return 3
+    except OSError as e:
+        print(f"{e.filename or 'augur.json'}: {e.strerror or e}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\ninterrupted; augur.json unchanged", file=sys.stderr)
+        return 130
+
+
 class _Stub:
     """A stand-in for the jev endpoint, installed over urllib.request.urlopen. `answer`
     maps (state, qid, question) to a noul; `script` is a queue of HTTP errors to raise
@@ -838,10 +1370,14 @@ class _Stub:
         self.calls = []
         self.requests = []                  # (url, headers, timeout) per call, keys included
         self.script = []
+        self.routes = {}                    # URL suffix -> body, for Ollama's own API
         self.answer = lambda state, qid, q: 0.95 if "banana" in json.dumps(state) and "fruit" in q["instructions"] else 0.05
 
     def __call__(self, req, timeout=None):
         self.requests.append((req.full_url, dict(req.header_items()), timeout))
+        for suffix, reply in self.routes.items():
+            if req.full_url.endswith(suffix):
+                return self.io.BytesIO(reply if isinstance(reply, bytes) else json.dumps(reply).encode())
         body = json.loads(req.data)
         self.calls.append(body)
         if self.script:
@@ -1188,6 +1724,137 @@ def _selftest():
             os.environ.pop("AUGUR_SELFTEST_ABSENT_KEY")
             expect(stub.requests[-1][1].get("Authorization") == "Bearer k2", "a second hosted key was not sent")
 
+            # configure backend: flags and guided prompts share one verify-then-write
+            def run(argv, answers=""):
+                o, saved_in = io.StringIO(), sys.stdin
+                sys.stdin = io.StringIO(answers)          # never a terminal here, so never guided by accident
+                try:
+                    with contextlib.redirect_stdout(o), contextlib.redirect_stderr(o):
+                        code = main(argv) if argv is not None else _guided_backend()
+                finally:
+                    sys.stdin = saved_in
+                return code, o.getvalue()
+
+            def saved():
+                return json.loads((Path(home) / "augur.json").read_text())
+            (Path(home) / "augur.json").write_text("{}")
+            stub.answer = lambda state, qid, q: 0.95 if "banana" in json.dumps(state) else 0.05
+            loc = ["configure", "backend", "loc", "--type", "systemone", "--url", "http://localhost:1/v1/systemone",
+                   "--model", "m:1b", "--price", "0"]
+            code, out = run(loc)
+            expect(code == 0 and saved()["backends"]["loc"] == {"type": "systemone", "url": "http://localhost:1/v1/systemone",
+                                                                "model": "m:1b", "price_per_mtok": 0.0},
+                   f"configure backend by flags: exit {code}, {out}")
+            with open(Path(home) / "usage.csv") as f:
+                row = list(csv.reader(f))[-1]
+            expect(row[1:4] == ["loc", "configure", "m:1b"] and stub.requests[-1][2] == PROBE_TIMEOUT,
+                   f"configure's question: ledger {row}, timeout {stub.requests[-1][2]}")
+            code, out = run(["configure", "backend", "loc", "--timeout", "9"])
+            expect(code == 0 and saved()["backends"]["loc"]["model"] == "m:1b" and saved()["backends"]["loc"]["timeout"] == 9,
+                   f"one flag did not merge over the entry: {saved()}")
+            stub.script = [500]
+            code, out = run(loc[:2] + ["fails"] + loc[3:])
+            expect(code == 3 and "fails" not in saved()["backends"] and "not saved" in out, f"saved unverified: {code} {out}")
+            stub.script = [500]
+            code, out = run(loc[:2] + ["fails"] + loc[3:] + ["--force"])
+            expect(code == 0 and "fails" in saved()["backends"] and "has not answered" in out, f"--force: {code} {out}")
+            for argv, fragment in ((["configure", "backend", "-x", "--url", "http://h"], "error"),
+                                   (["configure", "backend", "b@d", "--type", "command", "--command", "x"], "a name takes"),
+                                   (["configure", "backend", "nu", "--type", "systemone", "--model", "m"], "'url'"),
+                                   (["configure", "backend", "loc", "--command", "x"], "unknown key 'command'"),
+                                   (["configure", "backend", "--type", "command", "--command", "x"], "name the backend"),
+                                   (["configure", "backend", "--list", "--remove", "loc"], "stand alone"),
+                                   (["configure", "backend", "jev", "--force"], "--force saves settings"),
+                                   (["configure", "backend", "u", "--type", "systemone", "--url", "https://me:k@h/v1"], "username, password"),
+                                   (["configure", "backend", "u", "--type", "systemone", "--url", "https://h/v1?key=k"], "query string"),
+                                   (["configure", "backend", "loc", "--price", "nan"], "error"),
+                                   (["configure", "backend", "loc", "--timeout", "0"], "error"),
+                                   (["configure", "backend", "typo", "--default"], "no backend named 'typo'"),
+                                   (["configure", "backend", "--remove", ""], "no backend named ''")):
+                try:
+                    code, out = run(argv)
+                except SystemExit as e:                  # argparse refuses before main returns
+                    code, out = e.code, "error"
+                expect(code == 2 and fragment in out, f"configure backend {argv[2:]}: exit {code}, {out.strip()[-120:]}")
+            code, out = run(["configure", "backend", "loc", "--type", "command", "--command", " ".join(cmd("ok"))])
+            expect(code == 0 and saved()["backends"]["loc"] == {"type": "command", "command": " ".join(cmd("ok"))},
+                   f"a new type did not replace the entry whole: {saved()['backends']['loc']}")
+            code, out = run(["configure", "backend", "loc", "--default"])
+            expect(code == 0 and saved()["backend"] == "loc" and _manifest()["backend"] == "loc", f"--default: {code} {out}")
+            code, out = run(["configure", "backend", "jev", "--model", "jev-9"])
+            expect(code == 0 and saved()["backends"]["jev"] == {"model": "jev-9"} and _backend("jev")[1]["url"].startswith("https"),
+                   f"a shipped name's change is not a merge over it: {saved()['backends'].get('jev')}")
+            code, out = run(["configure", "backend", "--list"])
+            expect(code == 0 and "* loc" in out and "shipped, changed" in out and "yours" in out, f"--list: {out}")
+            code, out = run(["configure", "backend", "jev"])
+            expect(code == 0 and json.loads(out)["origin"] == "shipped, changed", f"show without a terminal: {out}")
+            code, out = run(["configure", "backend", "--remove", "jev"])
+            expect(code == 0 and "jev" not in saved()["backends"] and "shipped settings again" in out, f"--remove jev: {out}")
+            code, out = run(["configure", "backend", "--remove", "loc"])
+            expect(code == 0 and "backend" not in saved() and "jev again" in out, f"--remove the default: {out}")
+            expect(run(["configure", "backend", "--remove", "jev"])[0] == 0 and run(["configure", "backend", "--remove", "zz"])[0] == 2,
+                   "--remove on an untouched shipped name or an unknown one")
+            (Path(home) / "augur.json").write_text('{"backends": null}')
+            code, out = run(["configure", "backend", "--list"])
+            expect(code == 0 and "jev" in out, f"--list over a null `backends`: {code} {out}")
+            (Path(home) / "augur.json").write_text('{"backends": {"x": null}}')
+            code, out = run(["configure", "backend", "--list"])
+            expect(code == 2 and "`backends` must be an object" in out, f"--list over a null entry: {code} {out}")
+            (Path(home) / "augur.json").write_text("{}")
+            code, out = run(["configure", "backend", "hk", "--type", "systemone", "--url", "http://h/v1/systemone",
+                             "--key-env", "AUGUR_SELFTEST_ABSENT_KEY", "--store-key"])
+            expect(code == 3 and "export AUGUR_SELFTEST_ABSENT_KEY=<your key>" in out
+                   and "`augur configure backend hk --store-key` stores one" in out, f"a missing key's remedy: {out}")
+            if sys.platform == "darwin":
+                code, out = run(["configure", "backend", "jev", "--store-key"])
+                expect(code == 2 and "needs a terminal" in out, f"--store-key without a terminal: {out}")
+
+            # guided, against a stand-in Ollama
+            saved_host = os.environ.get("OLLAMA_HOST")
+            os.environ["OLLAMA_HOST"] = "localhost:1"
+            tags = {"models": [{"name": "nim:latest", "digest": "d1", "size": 9e9, "capabilities": ["decision"]},
+                               {"name": "nim:9b-q8_0", "digest": "d1", "size": 9e9, "capabilities": ["decision"]},
+                               {"name": "other:1b", "digest": "d2", "size": 1e9, "capabilities": ["completion"]},
+                               {"name": "old:1b", "digest": "d3", "size": None, "capabilities": None}]}
+            stub.routes = {"/api/version": {"version": "0.35.0"}, "/api/tags": tags,
+                           "/api/pull": b'{"status": "pulling", "total": 4, "completed": 2}\n{"status": "success"}\n'}
+            try:
+                code, out = run(None, "1\n1\n\ny\n")
+                expect(code == 0 and saved()["backends"]["nim"]["model"] == "nim:9b-q8_0" and saved()["backend"] == "nim"
+                       and saved()["backends"]["nim"]["url"] == "http://localhost:1/v1/systemone"
+                       and "other:1b" not in out and "1 other model is not" in out,
+                       f"guided Ollama, latest resolved to its exact tag, made default: {code} {out[-300:]}")
+                code, out = run(None, "1\n4\nfresh:2b\n\nn\n")
+                expect(code == 0 and saved()["backends"]["fresh"]["model"] == "fresh:2b" and "success" in out,
+                       f"guided Ollama pull: {code} {out[-300:]}")
+                code, out = run(None, "1\n1\nnim\nn\n")
+                expect(code == 1 and "augur.json unchanged" in out, f"guided: declining to replace: {code} {out[-200:]}")
+                stub.routes["/api/pull"] = b'{"error": "pull model manifest: file does not exist"}\n'
+                code, out = run(None, "1\n4\nnope:1b\n")
+                expect(code == 3 and "file does not exist" in out, f"guided pull of a missing model: {code} {out[-200:]}")
+                stub.routes["/api/tags"] = b"<html>proxy error</html>"
+                code, out = run(None, "1\n")
+                expect(code == 3 and "not answering" in out, f"guided, a tags reply that is not JSON: {code} {out[-200:]}")
+                stub.routes["/api/tags"] = tags
+                stub.routes["/api/version"] = {"version": "0.34.9"}
+                code, out = run(None, "1\n")
+                expect(code == 3 and "too old" in out, f"guided, an old Ollama: {code} {out[-200:]}")
+                code, out = run(None, f"4\n{' '.join(cmd('ok'))}\n\nscr\nn\n")
+                expect(code == 0 and saved()["backends"]["scr"]["type"] == "command", f"guided command: {code} {out[-200:]}")
+                if sys.platform == "darwin":       # a hosted key: decline storing it, so no keychain is touched
+                    code, out = run(None, "2\nhttps://api.acme.example/v1/systemone\nacme-2\n0.05\n\n\nn\nn\n")
+                    expect(code == 3 and "acme" not in saved()["backends"] and "acme --store-key" in out,
+                           f"guided hosted without its key: {code} {out[-300:]}")
+                code, out = run(None, "")
+                expect(code == 1 and "augur.json unchanged" in out, f"guided, input ends: {code} {out[-200:]}")
+            finally:
+                stub.routes = {}
+                if saved_host is None:
+                    os.environ.pop("OLLAMA_HOST", None)
+                else:
+                    os.environ["OLLAMA_HOST"] = saved_host
+            (Path(home) / "augur.json").write_text("{}")
+
             ok, reason = available("laya")
             expect(not ok and "does not name an interpreter" in reason, f"laya without a venv: {reason}")
             expect(unavailable(lambda: ask("x", fruit, backend="nope"), "unknown backend"), "unknown backend accepted")
@@ -1244,7 +1911,6 @@ def _install():
 
 
 def _uninstall(yes, dry):
-    import shutil
     link = BIN / "augur"
     links = [link] if not PACKAGED and link.is_symlink() else []
     venv = LAYA_VENV if LAYA_VENV.is_dir() else None
@@ -1259,7 +1925,7 @@ def _uninstall(yes, dry):
         return 0
     if (links or venv) and not yes:
         if sys.stdin.isatty():
-            if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+            if not _yes("proceed?"):
                 print("nothing removed")
                 return 1
         else:
@@ -1330,6 +1996,31 @@ Exit 0 and `ok:` when the backend answers; exit 3 and `unavailable: <reason>` ot
 A misspelled or mistyped manifest key is printed first, prefixed `augur.json:`, and never changes the exit.
 """,
     "configure": """examples:
+  augur configure backend                      add a backend, guided: Ollama, a hosted API, Laya or a script
+  augur configure backend --list               every backend, its type, and which is the default
+  augur configure check my-items.json          the questions `augur check --live` asks
+
+`augur configure backend -h` and `augur configure check -h` have the flags.
+""",
+    "configure backend": """examples:
+  augur configure backend                      guided, in a terminal: where the model runs, which model,
+                                               then one real question before anything is saved
+  augur configure backend nimble --type systemone --url http://localhost:11434/v1/systemone \\
+      --model nimble:9b-q8_0 --price 0         the same by flags, for a script or an agent
+  augur configure backend acme --type systemone --url https://api.acme.example/v1/systemone \\
+      --model acme-2.1 --key-service ACME_API_KEY --key-env ACME_API_KEY --store-key
+                                               a hosted API; `security` prompts for the key itself
+  augur configure backend jev --store-key      store or replace jev's key, then ask it one question
+  augur configure backend nimble --default     make an existing backend the default
+  augur configure backend nimble --timeout 120 change one setting; the rest of the entry stays
+  augur configure backend --list               every backend: type, shipped or yours, the default
+  augur configure backend --remove nimble      remove yours; on a shipped name, its shipped settings return
+
+A backend is saved only after it answers one question, booked in the ledger as caller
+`configure`; --force saves one that does not. No flag takes an API key: --store-key hands
+the prompt to macOS `security`, and elsewhere prints the variable to export.
+""",
+    "configure check": """examples:
   augur configure check my-items.json          copy a calibrate items file of up to %d items as the live check
   augur configure check my-items.json --threshold 0.3
                                                a label is right at or above 0.3 for true, below it for false
@@ -1404,12 +2095,37 @@ def main(argv):
     k = cmd("check", "positive check for the backend", parents=[common])
     k.add_argument("--live", action="store_true",
                    help="ask known questions and check the answers: yours from `augur configure check`, else two built-in")
-    f = cmd("configure", "set what `check --live` asks")
-    f.add_argument("what", choices=["check"])
-    f.add_argument("file", nargs="?", help="a calibrate items file (at most %d items) to copy as the live check" % CHECK_MAX)
-    f.add_argument("--threshold", type=float, metavar="P", help="a label is right when its answer is at or above P for "
-                   "true and below it for false (default 0.5)")
-    f.add_argument("--reset", action="store_true", help="remove the live check; the built-in questions return")
+    f = cmd("configure", "set up a backend, or what `check --live` asks")
+    fs = f.add_subparsers(dest="what", title="what", metavar="<what>", required=True)
+
+    def part(name, help):
+        return fs.add_parser(name, help=help, description=help, epilog=EXAMPLES[f"configure {name}"],
+                             allow_abbrev=False, **fmt)
+    fb = part("backend", "add, change, list or remove a backend")
+    fb.add_argument("name", nargs="?", help="the backend's name; guided in a terminal when no flag follows")
+    fb.add_argument("--type", choices=sorted(BACKEND_TYPES), help="the protocol it speaks")
+    fb.add_argument("--url", help="systemone: the endpoint")
+    fb.add_argument("--model", help="systemone or command: the model to ask; pin a version")
+    fb.add_argument("--key-service", dest="keychain_service", metavar="NAME",
+                    help="systemone: the macOS keychain service holding the key")
+    fb.add_argument("--key-env", dest="env_key", metavar="VAR", help="systemone: the environment variable holding the key")
+    fb.add_argument("--command", help="command: the script, as one string split as a shell would")
+    fb.add_argument("--python", help="laya: the interpreter of a venv holding laya and torch")
+    fb.add_argument("--checkpoint", help="laya: the checkpoint to load")
+    fb.add_argument("--device", help="laya: cuda, mps or cpu")
+    fb.add_argument("--timeout", type=_positive, metavar="S", help="seconds to wait for an answer")
+    fb.add_argument("--price", type=_price, dest="price_per_mtok", metavar="USD",
+                    help="USD per million input tokens, for the usage ledger")
+    fb.add_argument("--default", action="store_true", help="make it the default backend")
+    fb.add_argument("--store-key", action="store_true", help="prompt for its key through macOS `security`")
+    fb.add_argument("--force", action="store_true", help="save it even when it does not answer")
+    fb.add_argument("--list", action="store_true", help="every backend, its type and origin, and the default")
+    fb.add_argument("--remove", metavar="NAME", help="remove your entry; a shipped name gets its shipped settings back")
+    fc = part("check", "set what `check --live` asks")
+    fc.add_argument("file", nargs="?", help="a calibrate items file (at most %d items) to copy as the live check" % CHECK_MAX)
+    fc.add_argument("--threshold", type=float, metavar="P", help="a label is right when its answer is at or above P for "
+                    "true and below it for false (default 0.5)")
+    fc.add_argument("--reset", action="store_true", help="remove the live check; the built-in questions return")
     a = cmd("ask", "one call; prints the response JSON", parents=[common])
     a.add_argument("-q", "--questions", metavar="FILE", help="JSON file: {name: question}")
     g = a.add_mutually_exclusive_group()
@@ -1453,6 +2169,8 @@ def main(argv):
     if args.cmd == "uninstall":
         return _uninstall(args.yes, args.dry_run)
     if args.cmd == "configure":
+        if args.what == "backend":
+            return _configure_backend(args)
         return _configure_check(args.file, args.threshold, args.reset)
     if args.cmd == "check":
         for finding in manifest_findings():
