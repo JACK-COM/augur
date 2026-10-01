@@ -111,7 +111,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.5.0"                          # the one home: pyproject.toml and the formula's test read it
+__version__ = "0.6.0"                          # the one home: pyproject.toml and the formula's test read it
 
 HERE = Path(__file__).resolve().parent
 # A package manager owns the command and moves this file on every upgrade: Homebrew's
