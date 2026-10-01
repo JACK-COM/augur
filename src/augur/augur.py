@@ -91,7 +91,9 @@ and with `--runs` above one the per-item standard deviation. `--compare` prints 
 mean absolute difference against a prior run's per-item means, which is how a backend
 change or a client change is shown not to have moved the instrument.
 """
+import contextlib
 import csv
+import fcntl
 import getpass
 import json
 import math
@@ -102,6 +104,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -230,7 +233,7 @@ def manifest_findings(path=None):
     found = _schema_lib().validate_file(p, MANIFEST_SCHEMA)
     if p.is_file() and not any(f.startswith("manifest does not parse") for f in found):
         defaults = {} if path else _defaults().get("backends", {})
-        found += _entry_findings(json.loads(p.read_text()), defaults)
+        found += _entry_findings(json.loads(p.read_text(encoding="utf-8")), defaults)
     # the shared checker anchors every finding on the word "manifest"; name the file instead
     return [p.name + (f[len("manifest"):] if f.startswith("manifest") else ": " + f) for f in found]
 
@@ -256,7 +259,7 @@ def _home():
 
 def _defaults():
     try:
-        return json.loads(DEFAULTS_FILE.read_text())
+        return json.loads(DEFAULTS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise AugurUnavailable(f"{DEFAULTS_FILE}: the shipped defaults do not load ({e}); reinstall augur")
 
@@ -282,7 +285,7 @@ def _manifest():
     p = _home() / "augur.json"
     if p.exists():
         try:
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 user = json.load(f)
         except ValueError as e:
             raise AugurUnavailable(f"{p}: not JSON ({e})")
@@ -343,7 +346,7 @@ def _log(backend, caller, model, nq, tokens, price):
     try:
         ledger = _home() / "usage.csv"
         ledger.parent.mkdir(parents=True, exist_ok=True)
-        with open(ledger, "a", newline="") as f:
+        with open(ledger, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if f.tell() == 0:  # header under the same append handle; a concurrent second header is tolerated
                 w.writerow(["ts", "backend", "caller", "model", "questions", "input_tokens", "usd"])
@@ -702,13 +705,13 @@ def calibrate(spec, *, backend=None, runs=1, limit=None, questions=None, workers
             if sds:
                 log(f"  run-to-run sd: mean {st.mean(sds):.3f}  max {max(sds):.3f}  n>0.05 {sum(1 for s in sds if s > 0.05)}")
         if compare:
-            prev = json.load(open(compare))
+            prev = json.loads(Path(compare).read_text(encoding="utf-8"))
             d = [abs(means[i][q] - prev[i][q]) for i in means if i in prev and q in prev[i] and means[i][q] is not None and prev[i][q] is not None]
             if d:
                 log(f"  vs {Path(compare).name}: mean |diff| {st.mean(d):.3f}  max {max(d):.2f}  n={len(d)}")
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-        with open(Path(out_dir) / f"means-{name}.json", "w") as f:
+        with open(Path(out_dir) / f"means-{name}.json", "w", encoding="utf-8") as f:
             json.dump(means, f, indent=1)
         log(f"\nper-item means: {Path(out_dir) / f'means-{name}.json'}")
     return means
@@ -720,12 +723,76 @@ CHECK_MAX = 10          # a live check is a health probe, one billed call per it
 
 
 def _write_json(path, obj, indent=2):
-    """Write whole or not at all: a reader never sees half a file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(obj, indent=indent) + "\n")
-    tmp.replace(path)
-    return path
+    """Write whole or not at all. A temporary file of its own beside the target, flushed to disk,
+    is renamed over it, so neither a reader nor a second writer sees half a file; the target keeps
+    its mode, and a symlinked augur.json keeps its link, the file it points at being replaced."""
+    target = Path(os.path.realpath(path))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = target.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mask = os.umask(0)
+        os.umask(mask)
+        mode = 0o666 & ~mask                # what a plain open() would have made
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
+    try:
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            os.close(fd)
+            raise
+        with f:
+            f.write(json.dumps(obj, indent=indent, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+            if hasattr(fcntl, "F_FULLFSYNC"):   # macOS: fsync alone leaves it in the drive's cache
+                try:
+                    fcntl.fcntl(f.fileno(), fcntl.F_FULLFSYNC)
+                except OSError:
+                    pass
+        os.chmod(tmp, mode)                 # mkstemp makes 0600
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    try:                                    # the rename itself, durable across a crash
+        d = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(d)
+        finally:
+            os.close(d)
+    except OSError:
+        pass                                # a filesystem that cannot sync a directory still renamed
+    return Path(path)
+
+
+LOCK_WAIT = 10
+_sleep = time.sleep                         # bound at import: the selftest stubs time.sleep, and the lock must still wait
+
+
+@contextlib.contextmanager
+def _manifest_lock():
+    """Hold augur.json's lock across a read-modify-write, so two `configure` runs at once cannot
+    each read the old file and the second write drop the first one's change. A holder only reads
+    and writes a small file, so one still holding it after LOCK_WAIT seconds is stuck, and the
+    error names the lock to remove."""
+    lock = _home() / "augur.json.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as f:
+        deadline = time.monotonic() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise AugurUnavailable(f"{lock} is held by another augur for over {LOCK_WAIT}s; "
+                                           f"if none is running, remove it")
+                _sleep(0.05)
+        yield                               # closing the file releases the lock
 
 
 def _check_file():
@@ -778,7 +845,7 @@ def _load_check():
     path = _check_file()
     if not path.exists():
         return None
-    raw = json.loads(path.read_text())
+    raw = json.loads(path.read_text(encoding="utf-8"))
     return _check_spec(raw, raw.get("threshold", 0.5) if isinstance(raw, dict) else 0.5)
 
 
@@ -808,7 +875,7 @@ def _configure_check(file, threshold, reset):
               else "live check: the two built-in questions (fruit, fish)")
         return 0
     try:
-        spec = _check_spec(json.loads(Path(file).read_text()), 0.5 if threshold is None else threshold)
+        spec = _check_spec(json.loads(Path(file).read_text(encoding="utf-8")), 0.5 if threshold is None else threshold)
     except (OSError, ValueError) as e:
         print(f"{file}: {e}", file=sys.stderr)
         return 2
@@ -880,8 +947,8 @@ def _user_manifest():
     """augur.json as the user wrote it, {} when absent. Raises ValueError when it does not parse."""
     p = _home() / "augur.json"
     if not p.exists():
-        return {}
-    raw = json.loads(p.read_text())
+        return {"backends": {}}
+    raw = json.loads(p.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{p}: not a JSON object")
     b = raw.setdefault("backends", {})
@@ -935,6 +1002,11 @@ def _show_backend(name):
 
 
 def _remove_backend(name):
+    with _manifest_lock():
+        return _remove_locked(name)
+
+
+def _remove_locked(name):
     user = _user_manifest()
     shipped = _defaults()["backends"]
     b = user.get("backends") or {}
@@ -994,6 +1066,27 @@ def _build_entry(name, given, replace=False):
         raise ValueError(str(e)) from None
 
 
+def _keychain_account(service):
+    """The account an existing item for SERVICE is stored under, else the login name. `-U` updates
+    only an item matching account and service, and a second item under another account is one
+    `find-generic-password -s` may find first. Without -w or -g, `security` prints attributes only."""
+    try:
+        r = subprocess.run(["security", "find-generic-password", "-s", service], capture_output=True, text=True,
+                           timeout=10)
+        return _acct(r.stdout) if r.returncode == 0 else getpass.getuser()
+    except (OSError, subprocess.SubprocessError):
+        return getpass.getuser()
+
+
+def _acct(attributes):
+    """The account in `security`'s attribute listing: `"acct"<blob>="name"`, or for a non-ASCII
+    name `"acct"<blob>=0x<hex>  "<escaped>"`, read from the hex."""
+    m = re.search(r'"acct"<blob>=(?:0x([0-9A-Fa-f]+)\s+)?"((?:[^"\\]|\\.)*)"', attributes)
+    if not m:
+        return getpass.getuser()
+    return bytes.fromhex(m.group(1)).decode("utf-8", "replace") if m.group(1) else m.group(2)
+
+
 def _store_key(name, cfg):
     """Put the key where the entry looks for it. On macOS `security` prompts for it itself, so
     the key is never an argument, never in shell history and never in Augur's output; Augur
@@ -1010,7 +1103,8 @@ def _store_key(name, cfg):
             return 2
         print(f"Paste the key at the prompt, then again to confirm; nothing echoes. "
               f"It goes in the keychain as {service}.")
-        r = subprocess.run(["security", "add-generic-password", "-a", getpass.getuser(), "-s", service, "-U", "-w"])
+        r = subprocess.run(["security", "add-generic-password", "-a", _keychain_account(service), "-s", service,
+                            "-U", "-w"])
         if r.returncode:
             print(f"security exited {r.returncode}; no key stored", file=sys.stderr)
             return 3
@@ -1053,15 +1147,19 @@ def _save_backend(name, given, *, replace=False, make_default=False, force=False
             print(f"{name} not saved; fix that and run this again, or add --force to save it unverified",
                   file=sys.stderr)
             return 3
-    user = _user_manifest()
-    user.setdefault("backends", {})[name] = entry
     current = _manifest()["backend"]
     if not make_default and confirm and current != name:
         make_default = confirm(f"Make {name} the default backend? It is {current} now.")
-    if make_default:
-        _set_default(user, name)
+    with _manifest_lock():                  # read under the lock: another run may have written since
+        user = _user_manifest()
+        if not replace:                     # merge over the entry as it is now, keeping a same-name run's keys
+            entry = _merged(user["backends"].get(name) or {}, given, _defaults()["backends"].get(name))
+        user["backends"][name] = entry
+        if make_default:
+            _set_default(user, name)
+        path = _write_json(_home() / "augur.json", user)
     print(f"saved {name}, a {t} backend{'' if ok else ' that has not answered'}"
-          f"{', as the default' if make_default else ''} ({_write_json(_home() / 'augur.json', user)})")
+          f"{', as the default' if make_default else ''} ({path})")
     print(f"before a threshold means anything on it, measure it:  augur calibrate items.json --backend {name} "
           f"--out run-{name}/")
     return 0
@@ -1340,9 +1438,11 @@ def _configure_backend(args):
             if not ok:
                 return 3
         if args.default:
-            user = _user_manifest()
-            _set_default(user, name)
-            print(f"{name} is the default ({_write_json(_home() / 'augur.json', user)}); "
+            with _manifest_lock():
+                user = _user_manifest()
+                _set_default(user, name)
+                path = _write_json(_home() / "augur.json", user)
+            print(f"{name} is the default ({path}); "
                   f"`augur check` asks it a question")
         return 0
     except ValueError as e:
@@ -1616,7 +1716,7 @@ def _selftest():
                 expect(w in found, f"manifest: not caught: {w}")
             expect("device" not in found, "manifest: a null device was flagged")
             schema_path = write_schema()
-            expect(json.loads(schema_path.read_text())["$id"] == "augur.schema.json", "schema: not written")
+            expect(json.loads(schema_path.read_text(encoding="utf-8"))["$id"] == "augur.schema.json", "schema: not written")
 
             # a command backend: a stand-in script, then `augur ask --request -` itself as the command
             stand = Path(home) / "stand.py"
@@ -1651,7 +1751,7 @@ def _selftest():
             ok, reason = available("stand")
             expect(ok and "answers" in reason, f"command check: {reason}")
             r = ask("banana", fruit, backend="stand", caller="cmd")
-            sent = json.loads(seen.read_text())
+            sent = json.loads(seen.read_text(encoding="utf-8"))
             expect(r["backend"] == "stand" and r["answers"]["fruit"]["noul"] == 0.97, f"command ask: {r}")
             expect(set(sent) == {"questions", "state"} and sent["state"]["text"] == "banana" and "fruit" in sent["questions"],
                    f"command request: {sent}")
@@ -1659,7 +1759,7 @@ def _selftest():
                 row = list(csv.reader(f))[-1]
             expect(row[1:3] == ["stand", "cmd"] and row[5:] == ["10", "0.000020"], f"command ledger: {row}")
             r = ask("banana", fruit, backend="named")
-            expect(json.loads(seen.read_text()).get("model") == "m1" and r["model"] == "m1",
+            expect(json.loads(seen.read_text(encoding="utf-8")).get("model") == "m1" and r["model"] == "m1",
                    "command: a string command or its model not honoured")
             r = ask("banana", fruit, backend="chain")
             expect(r["answers"]["fruit"]["noul"] == 0.97, f"augur ask --request - as a command: {r}")
@@ -1736,8 +1836,8 @@ def _selftest():
                 return code, o.getvalue()
 
             def saved():
-                return json.loads((Path(home) / "augur.json").read_text())
-            (Path(home) / "augur.json").write_text("{}")
+                return json.loads((Path(home) / "augur.json").read_text(encoding="utf-8"))
+            (Path(home) / "augur.json").unlink()          # a first backend, before augur.json exists
             stub.answer = lambda state, qid, q: 0.95 if "banana" in json.dumps(state) else 0.05
             loc = ["configure", "backend", "loc", "--type", "systemone", "--url", "http://localhost:1/v1/systemone",
                    "--model", "m:1b", "--price", "0"]
@@ -1853,6 +1953,36 @@ def _selftest():
                     os.environ.pop("OLLAMA_HOST", None)
                 else:
                     os.environ["OLLAMA_HOST"] = saved_host
+            (Path(home) / "augur.json").write_text("{}")
+
+            # the write: whole, its mode and its link kept, no temporary left behind
+            real = Path(home) / "real.json"
+            real.write_text("{}")
+            real.chmod(0o640)
+            link = Path(home) / "linked.json"
+            link.symlink_to(real)
+            _write_json(link, {"name": "café"})
+            expect(link.is_symlink() and json.loads(real.read_text(encoding="utf-8")) == {"name": "café"}
+                   and (real.stat().st_mode & 0o777) == 0o640 and "café" in real.read_text(encoding="utf-8")
+                   and not list(Path(home).glob("*.tmp")), "_write_json: link, mode, text or a leftover temporary")
+            with _manifest_lock():
+                expect((Path(home) / "augur.json.lock").exists(), "the manifest lock")
+            expect(_acct('    "acct"<blob>="okure"\n    "svce"<blob>="X"\n') == "okure"
+                   and _acct("") == getpass.getuser()
+                   and _acct('    "acct"<blob>=0x636166C3A9  "caf\\303\\251"\n') == "café", "keychain account parse")
+            (Path(home) / "augur.json").write_text("{}")
+
+            def writer(i):
+                with _manifest_lock():
+                    u = _user_manifest()
+                    u["backends"][f"w{i}"] = {"type": "command", "command": "x"}
+                    _write_json(Path(home) / "augur.json", u)
+            ts = [threading.Thread(target=writer, args=(i,)) for i in range(8)]
+            for t_ in ts:
+                t_.start()
+            for t_ in ts:
+                t_.join()
+            expect(sorted(saved()["backends"]) == [f"w{i}" for i in range(8)], f"concurrent writers: {saved()}")
             (Path(home) / "augur.json").write_text("{}")
 
             ok, reason = available("laya")
@@ -2162,7 +2292,7 @@ def main(argv):
         print(f'editor: add "$schema": "{path}" to augur.json, or map augur.json to it in the editor\'s JSON schema settings')
         return 0
     if args.cmd == "help":
-        print((HERE / "INSTALL-augur.md").read_text(), end="")
+        print((HERE / "INSTALL-augur.md").read_text(encoding="utf-8"), end="")
         return 0
     if args.cmd == "install":
         return _install()
