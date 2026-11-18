@@ -1,4 +1,4 @@
-# GENERATED from panoply-lib/guard.py (b4a5413) by sync.sh: edit the source and rerun sync.sh, never this copy.
+# GENERATED from panoply-lib/guard.py (b4a5413+uncommitted) by sync.sh: edit the source and rerun sync.sh, never this copy.
 """guard: the checks every Panoply piece makes before text reaches a terminal or a setting
 turns a passive file active.
 
@@ -80,8 +80,11 @@ def is_loopback(url: str) -> bool:
 
 def _public(ip: str) -> bool:
     a = ipaddress.ip_address(ip.split("%", 1)[0])
-    if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped:
-        a = a.ipv4_mapped
+    if isinstance(a, ipaddress.IPv6Address):
+        if a.ipv4_mapped:
+            a = a.ipv4_mapped
+        elif a in ipaddress.ip_network("64:ff9b::/96") or a in ipaddress.ip_network("fec0::/10"):
+            return False          # NAT64 can reach any IPv4, private included; site-local is private
     return a.is_global and not a.is_multicast
 
 
@@ -128,7 +131,8 @@ def _selftest() -> None:
     assert not is_loopback("https://example.com") and not is_loopback("not a url")
     for ip, want in (("127.0.0.1", False), ("10.1.2.3", False), ("169.254.169.254", False),
                      ("0.0.0.0", False), ("::ffff:127.0.0.1", False), ("fe80::1", False),
-                     ("224.0.0.1", False), ("93.184.215.14", True), ("2606:4700::1", True)):
+                     ("224.0.0.1", False), ("64:ff9b::a00:1", False), ("fec0::1", False),
+                     ("93.184.215.14", True), ("2606:4700::1", True)):
         assert _public(ip) is want, ip
     fake = lambda *a, **k: [(0, 0, 0, "", ("93.184.215.14", 0)), (0, 0, 0, "", ("10.0.0.1", 0))]
     with mock.patch.object(socket, "getaddrinfo", fake):
