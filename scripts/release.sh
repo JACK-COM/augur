@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Release Augur: stamp the version, test, tag, push, and move the Homebrew
+# Release Augur: test, stamp the version, tag, push, and move the Homebrew
 # formula to the new tarball. Run from anywhere:  scripts/release.sh 0.1.3
 #
 # The tap is a sibling checkout (../homebrew-panoply) unless PANOPLY_TAP names it.
 # Every step stops the release on failure; a tarball that cannot be fetched, or a
 # hash that is not 64 hex characters, never reaches the formula.
-# A selftest failure leaves the version stamped and uncommitted; `git checkout src` clears it.
 # A failure after the tag is pushed leaves the release tagged and the formula
 # unmoved: fix the cause, then set the formula's url and sha256 by hand.
 set -euo pipefail
@@ -26,11 +25,17 @@ for r in "$repo" "$tap"; do
 done
 git -C "$repo" rev-parse -q --verify "refs/tags/v$version" >/dev/null && { echo "v$version is already tagged" >&2; exit 1; }
 
+# A module past this many lines is a component that has not been named yet; split it
+# before releasing. Every check runs before the stamp, so a refused release leaves the tree clean.
+ceiling=800
+over="$(find "$src" -name "*.py" -not -path "*/__pycache__/*" -exec wc -l {} + | awk -v c="$ceiling" '$2 != "total" && $1 > c {print "  " $2 ": " $1}')"
+[[ -z "$over" ]] || { printf 'modules over %s lines:\n%s\n' "$ceiling" "$over" >&2; exit 1; }
+
+# the panoply-lib copies, tests/ and the install smoke check
+make -C "$repo" test
+
 sed -i.bak -E "s/^__version__ = \"[^\"]+\"/__version__ = \"$version\"/" "$src/augur.py" && rm "$src/augur.py.bak"
 grep -q "^__version__ = \"$version\"" "$src/augur.py" || { echo "could not stamp the version" >&2; exit 1; }
-
-"$repo/../panoply-lib/sync.sh" --check augur
-python3 "$src/augur.py" selftest
 
 git -C "$repo" commit -qam "$version"
 git -C "$repo" tag -a "v$version" -m "$version"

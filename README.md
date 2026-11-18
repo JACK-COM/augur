@@ -31,4 +31,4 @@ Python 3.9 or later and numpy. `jev` needs network access and a key; an Ollama m
 
 ## Releasing
 
-`make version` (or `version-minor`, `version-major`) computes the next version from `__version__` and hands it to `scripts/release.sh X.Y.Z`, which stamps it, runs the selftest, tags and pushes, then moves the formula in [the tap](https://github.com/JACK-COM/homebrew-panoply) to the new tarball and names any guide page the release has moved past. `make test` runs the selftest alone.
+`make version` (or `version-minor`, `version-major`) computes the next version from `__version__` and hands it to `scripts/release.sh X.Y.Z`, which refuses a module over 800 lines, runs `make test`, stamps it, tags and pushes, then moves the formula in [the tap](https://github.com/JACK-COM/homebrew-panoply) to the new tarball and names any guide page the release has moved past. `make test` checks the panoply-lib copies, runs `tests/` (stdlib unittest; `AUGUR_SRC` points the suites at another tree) and the install smoke check, `augur selftest`.

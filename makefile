@@ -7,8 +7,9 @@ help: ## | List all available commands
 	| sed -n 's/^\(.*\): \(.*\)##\(.*\)/\1\3/p' \
 	| column -t -s '|'
 
-test: ## | Check the panoply-lib copies, then run the offline selftest
+test: ## | Check the panoply-lib copies, then run tests/ and the install smoke check
 	../panoply-lib/sync.sh --check augur
+	python3 -m unittest discover -s tests -t .
 	python3 src/augur/augur.py selftest
 
 version-patch: ## | Release the next PATCH version: stamp, test, tag, push, move the formula

@@ -70,7 +70,7 @@ model, questions, input tokens, USD at the backend's price; a local backend logs
     augur ask -q questions.json (-t "text" | -s state.json) [--subject S] [--siblings A,B]
     augur calibrate items.json [--backend B] [--runs N] [--limit N] [--out DIR]
                                [--compare means.json] [--questions a,b]
-    augur selftest                               the client against a stand-in backend, offline
+    augur selftest                               an offline smoke check of the install
     augur help install                           the install steps an agent follows
     augur --help
 
@@ -253,7 +253,7 @@ class BatchTooLarge(ValueError):
 # ---- manifest ----------------------------------------------------------------
 
 def _home():
-    """Read per call, so a caller (or the selftest) can point AUGUR_HOME elsewhere."""
+    """Read per call, so a caller (or a test) can point AUGUR_HOME elsewhere."""
     return Path(os.environ.get("AUGUR_HOME") or Path.home() / ".augur").expanduser()
 
 
@@ -770,7 +770,6 @@ def _write_json(path, obj, indent=2):
 
 
 LOCK_WAIT = 10
-_sleep = time.sleep                         # bound at import: the selftest stubs time.sleep, and the lock must still wait
 
 
 @contextlib.contextmanager
@@ -791,7 +790,7 @@ def _manifest_lock():
                 if time.monotonic() > deadline:
                     raise AugurUnavailable(f"{lock} is held by another augur for over {LOCK_WAIT}s; "
                                            f"if none is running, remove it")
-                _sleep(0.05)
+                time.sleep(0.05)
         yield                               # closing the file releases the lock
 
 
@@ -1459,38 +1458,6 @@ def _configure_backend(args):
         return 130
 
 
-class _Stub:
-    """A stand-in for the jev endpoint, installed over urllib.request.urlopen. `answer`
-    maps (state, qid, question) to a noul; `script` is a queue of HTTP errors to raise
-    before answering."""
-
-    def __init__(self):
-        import io
-        self.io = io
-        self.calls = []
-        self.requests = []                  # (url, headers, timeout) per call, keys included
-        self.script = []
-        self.routes = {}                    # URL suffix -> body, for Ollama's own API
-        self.answer = lambda state, qid, q: 0.95 if "banana" in json.dumps(state) and "fruit" in q["instructions"] else 0.05
-
-    def __call__(self, req, timeout=None):
-        self.requests.append((req.full_url, dict(req.header_items()), timeout))
-        for suffix, reply in self.routes.items():
-            if req.full_url.endswith(suffix):
-                return self.io.BytesIO(reply if isinstance(reply, bytes) else json.dumps(reply).encode())
-        body = json.loads(req.data)
-        self.calls.append(body)
-        if self.script:
-            code = self.script.pop(0)
-            from email.message import Message
-            h = Message()
-            h["retry-after"] = "0"
-            raise urllib.error.HTTPError(req.full_url, code, "stub", h, self.io.BytesIO(b"stub error"))
-        answers = {qid: {"type": "noul", "noul": self.answer(body["state"], qid, q)} for qid, q in body["questions"].items()}
-        return self.io.BytesIO(json.dumps({"model": body["model"], "answers": answers,
-                                           "usage": {"input_tokens": 1000}}).encode())
-
-
 REQUEST_KEYS = {"questions", "text", "state", "subject", "siblings", "model", "caller"}
 
 
@@ -1520,488 +1487,34 @@ def _request(req):
             {"subject": req.get("subject"), "siblings": sib, "model": req.get("model"), "caller": req.get("caller")})
 
 
-def _selftest():
-    """The client end to end against a stand-in backend: no network, no key, no model.
-    Exercises the manifest, the ledger, the answer checks, retry, batch and re-ask,
-    calibrate and the unavailable paths. ⚠ It patches urllib.request.urlopen and
-    time.sleep process-wide: safe once per CLI process, never from two threads at once."""
-    import tempfile
-    saved_env = {k: os.environ.get(k) for k in ("AUGUR_HOME", "AUGUR_BACKEND", "TYPESAFE_API_KEY")}
-    saved_open, saved_sleep = urllib.request.urlopen, time.sleep
-    stub = _Stub()
-    failures = []
-
-    def expect(cond, what):
-        if not cond:
-            failures.append(what)
-
-    def unavailable(fn, fragment):
-        try:
-            fn()
-        except AugurUnavailable as e:
-            return fragment in str(e)
-        return False
-
+def _smoke():
+    """An offline smoke check of an install: no network, no key, no model. The shipped
+    defaults are clean, a scorer-contract request parses, and one ask runs end to end
+    through a stand-in command backend under a scratch Augur home. The behaviour suites
+    are tests/, run by `make test`."""
+    try:
+        from . import _scorer_contract as contract
+    except ImportError:
+        import _scorer_contract as contract
+    failures = [f"defaults.json: {f}" for f in manifest_findings(DEFAULTS_FILE)]
+    saved = os.environ.get("AUGUR_HOME")
     with tempfile.TemporaryDirectory() as home:
+        os.environ["AUGUR_HOME"] = home
         try:
-            os.environ["AUGUR_HOME"] = home
-            os.environ["TYPESAFE_API_KEY"] = "selftest"
-            os.environ.pop("AUGUR_BACKEND", None)
-            # a keychain service nobody has, so the key comes from the environment
-            with open(Path(home) / "augur.json", "w") as f:
-                json.dump({"backends": {"jev": {"keychain_service": "augur-selftest-absent", "price_per_mtok": 1.0}}}, f)
-            urllib.request.urlopen, time.sleep = stub, lambda s: None
-
-            ok, reason = available()
-            expect(ok and reason == "jev-1.13.0 answers" and stub.calls[-1]["model"] == "jev-1.13.0",
-                   f"check asks the pinned model a real question: {reason}")
-            expect(manifest_findings() == [], f"a clean manifest drew findings: {manifest_findings()}")
-
-            fruit = {"fruit": noul("Is the word in `text` the name of a fruit?")}
-            r = ask("banana", fruit, subject="lunch", siblings=["apple"], caller="selftest")
-            st = stub.calls[-1]["state"]
-            expect(r["answers"]["fruit"]["noul"] > 0.9 and r["backend"] == "jev", "ask: answer or backend")
-            expect(st["text"] == "banana" and st["subject"] == "lunch" and st["siblings"] == ["apple"] and st.get("uid"),
-                   "ask: subject, siblings and uid not named in the state")
-            with open(Path(home) / "usage.csv") as f:
-                rows = list(csv.reader(f))
-            expect(rows[0][0] == "ts" and rows[-1][2] == "selftest" and rows[-1][6] == "0.001000",
-                   f"ledger: {rows[-1] if rows else 'empty'}")
-
-            import contextlib
-            import io
-            req = {"questions": fruit, "text": "banana", "subject": "lunch", "caller": "piped"}
-            saved_stdin, sys.stdin = sys.stdin, io.StringIO(json.dumps(req))
-            out = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(out):
-                    code = main(["ask", "--request", "-", "--caller", "flagged"])
-            finally:
-                sys.stdin = saved_stdin
-            piped = json.loads(out.getvalue()) if code == 0 else {}
-            expect(piped.get("answers", {}).get("fruit", {}).get("noul", 0) > 0.9
-                   and stub.calls[-1]["state"]["subject"] == "lunch", f"--request -: exit {code}")
-            with open(Path(home) / "usage.csv") as f:
-                expect(list(csv.reader(f))[-1][2] == "flagged", "--request: a flag did not win over the request")
-            with open(Path(home) / "call.json", "w") as f:
-                json.dump(req, f)
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                codes = (main(["ask", "--request", str(Path(home) / "call.json")]),
-                         main(["ask", "--request", str(Path(home) / "call.json"), "-q", "x.json"]),
-                         main(["ask"]))
-            expect(codes == (0, 2, 2), f"--request FILE, -q beside --request, no input: exits {codes}")
-            for bad, fragment in (([], "not a JSON object"), ({"questions": fruit, "text": "x", "subjcet": "y"}, "'subjcet'"),
-                                  ({"questions": fruit}, "exactly one"), ({"questions": fruit, "text": "x", "state": {}}, "exactly one"),
-                                  ({"questions": {}, "text": "x"}, "non-empty"), ({"questions": fruit, "text": 3}, "`text`"),
-                                  ({"questions": fruit, "text": "x", "siblings": "a,b"}, "`siblings`"),
-                                  ({"questions": fruit, "text": "x", "caller": ""}, "`caller`")):
-                try:
-                    _request(bad)
-                    expect(False, f"request accepted: {bad}")
-                except ValueError as e:
-                    expect(fragment in str(e), f"request {bad}: {e}")
-
-            for bad in (float("nan"), 1.2):
-                stub.answer = lambda state, qid, q, bad=bad: bad
-                expect(unavailable(lambda: ask("x", fruit), "not a probability"), f"answer {bad} accepted")
-
-            stub.answer = lambda state, qid, q: 0.9
-            stub.script = [429, 429]
-            expect(ask("x", fruit)["answers"]["fruit"]["noul"] == 0.9, "429: not retried to an answer")
-            stub.script = [500]
-            expect(unavailable(lambda: ask("x", fruit), "HTTP 500"), "500: not reported")
-
-            def qs(id_, path):
-                return {"long": noul(f"Is the text at `{path}` longer than three words?")}
-            stub.answer = lambda state, qid, q: 0.55 if "items" in state else 0.9
-            n = len(stub.calls)
-            out = batch({"a": "one two three four", "b": "one"}, qs, threshold=0.5)
-            expect(set(out) == {"a", "b"} and all(out[i]["long"].get("reasked") for i in out), "batch: re-ask near threshold")
-            expect(len(stub.calls) == n + 3 and stub.calls[n + 1]["state"]["text"] == "one two three four",
-                   "batch: re-ask not asked in isolation")
-            try:
-                batch({str(i): "x" for i in range(MAX_BATCH + 1)}, qs)
-                expect(False, "batch: cap not enforced")
-            except BatchTooLarge:
-                pass
-            try:
-                batch({"a__b": "x"}, qs)
-                expect(False, "batch: '__' in an id accepted")
-            except ValueError:
-                pass
-
-            stub.answer = lambda state, qid, q: 0.95 if "banana" in json.dumps(state) and qid in ("fruit",) else 0.05
-            items = Path(home) / "mine.json"
-            items.write_text(json.dumps({"questions": fruit, "items": [
-                {"id": "b", "text": "banana", "labels": {"fruit": True}},
-                {"id": "c", "text": "carrot", "labels": {"fruit": False}}]}))
-            quiet = contextlib.redirect_stdout(io.StringIO())
-            with quiet, contextlib.redirect_stderr(io.StringIO()):
-                codes = [main(["configure", "check", str(items)]), main(["check", "--live"])]
-                items.write_text(json.dumps({"questions": fruit, "items": [
-                    {"id": "c", "text": "carrot", "labels": {"fruit": True}}]}))
-                codes += [main(["check", "--live"]),                        # the copy, not the edited original
-                          main(["configure", "check", str(items)]), main(["check", "--live"])]
-                items.write_text(json.dumps({"questions": fruit, "items": [
-                    {"id": str(i), "text": "x", "labels": {"fruit": True}} for i in range(CHECK_MAX + 1)]}))
-                codes += [main(["configure", "check", str(items)]),
-                          main(["configure", "check", str(items), "--threshold", "1"])]
-                items.write_text(json.dumps({"questions": fruit, "items": [{"id": "b", "text": "banana",
-                                                                             "labels": {"frut": True}}]}))
-                codes += [main(["configure", "check", str(items)]), main(["configure", "check", "--reset"]),
-                          main(["check", "--live"])]
-            expect(codes == [0, 0, 0, 0, 1, 2, 2, 2, 0, 0], f"configure check / check --live exits: {codes}")
-            items.write_text(json.dumps({"questions": fruit, "items": [{"id": "b", "text": "banana",
-                                                                         "labels": {"fruit": True}}]}))
-            shown = io.StringIO()
-            with contextlib.redirect_stdout(shown), contextlib.redirect_stderr(io.StringIO()):
-                codes = [main(["configure", "check"]), main(["configure", "check", str(items), "--threshold", "0.4"]),
-                         main(["configure", "check"]), main(["configure", "check", str(items), "--reset"]),
-                         main(["configure", "check", "--threshold", "0.4"])]
-                _check_file().write_text(json.dumps({"threshold": 0.5, "questions": fruit, "items": [
-                    {"id": "b", "text": "banana", "labels": {"fruit": True}, "siblings": 5}]}))
-                codes += [main(["check", "--live"]), main(["configure", "check", "--reset"])]
-            expect(codes == [0, 0, 0, 2, 2, 2, 0], f"configure check view, flag combinations, a hand-broken copy: {codes}")
-            expect("built-in" in shown.getvalue() and "1 items from" in shown.getvalue() and "threshold 0.4" in shown.getvalue(),
-                   "configure check with no file did not show the built-in pair, then the configured items")
-            one = [{"id": "b", "text": "banana", "labels": {"fruit": True}}]
-            for spec, t, fragment in (([], 0.5, "not a JSON object"), ({"questions": {}, "items": one}, 0.5, "`questions`"),
-                                      ({"questions": fruit, "items": one}, 1.0, "strictly between"),
-                                      ({"questions": fruit, "items": one * 2}, 0.5, "appears twice"),
-                                      ({"questions": fruit, "items": [{"id": "b", "text": "", "labels": {"fruit": True}}]},
-                                       0.5, "`text`"),
-                                      ({"questions": fruit, "items": [{**one[0], "subject": 3}]}, 0.5, "`subject`"),
-                                      ({"questions": fruit, "items": [{**one[0], "siblings": "a,b"}]}, 0.5, "`siblings`"),
-                                      ({"questions": {"kind": choice("Which?", {"a": None})},
-                                        "items": [{"id": "b", "text": "x", "labels": {"kind": True}}]}, 0.5, "nouls only")):
-                try:
-                    _check_spec(spec, t)
-                    expect(False, f"_check_spec accepted a spec lacking {fragment}")
-                except ValueError as e:
-                    expect(fragment in str(e), f"_check_spec: {e!r} does not name {fragment}")
-            expect(not _check_file().exists(), "--reset left check.json behind")
-
-            try:            # Augur's half of panoply-lib's scorer contract: accept its request, answer at its path
-                from . import _scorer_contract as contract
-            except ImportError:
-                import _scorer_contract as contract
-            saved_stdin, sys.stdin = sys.stdin, io.StringIO(json.dumps(contract.REQUEST))
-            out = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(out):
-                    code = main(["ask", "--request", "-", "--caller", "grille"])
-            finally:
-                sys.stdin = saved_stdin
-            try:
-                p = contract.probability(json.loads(out.getvalue()))
-                expect(code == 0 and 0 <= p <= 1, f"scorer contract: exit {code}, probability {p!r}")
-            except (KeyError, TypeError, ValueError) as e:
-                expect(False, f"scorer contract: the reply lacks {'.'.join(contract.REPLY_PATH)} ({e!r})")
-
-            expect(abs(_auroc([0.9, 0.8], [0.1, 0.8]) - 0.875) < 1e-9, "auroc")
-            stub.answer = lambda state, qid, q: 0.9 if "yes" in state["text"] else 0.1
-            spec = {"name": "selftest", "questions": fruit,
-                    "items": [{"id": "p", "text": "yes", "labels": {"fruit": True}},
-                              {"id": "n", "text": "no", "labels": {"fruit": False}}]}
-            lines = []
-            means = calibrate(spec, runs=2, workers=1, log=lines.append)
-            expect(means == {"p": {"fruit": 0.9}, "n": {"fruit": 0.1}}, f"calibrate means: {means}")
-            expect(any("AUROC 1.000" in ln for ln in lines), "calibrate: AUROC line")
-
-            with open(Path(home) / "augur.json", "w") as f:
-                json.dump({"backnd": "laya", "backends": {"laya": {"pyton": "/x", "device": None, "head_max_len": "512"}}}, f)
-            found = " | ".join(manifest_findings())
-            for w in ("unknown key 'backnd', did you mean 'backend'?", "unknown key 'pyton', did you mean 'python'?",
-                      "head_max_len: expected integer"):
-                expect(w in found, f"manifest: not caught: {w}")
-            expect("device" not in found, "manifest: a null device was flagged")
-            schema_path = write_schema()
-            expect(json.loads(schema_path.read_text(encoding="utf-8"))["$id"] == "augur.schema.json", "schema: not written")
-
-            # a command backend: a stand-in script, then `augur ask --request -` itself as the command
-            stand = Path(home) / "stand.py"
-            stand.write_text(
-                "import json, sys\n"
-                "mode = sys.argv[1]\n"
-                "req = json.load(sys.stdin)\n"
-                "open(sys.argv[2], 'w').write(json.dumps(req))\n"
-                "if mode == 'fail':\n    sys.stderr.write('boom\\n'); sys.exit(3)\n"
-                "if mode == 'prose':\n    print('I think it is a fruit'); sys.exit(0)\n"
-                "if mode == 'slow':\n    import time; time.sleep(5)\n"
-                "if mode == 'bytes':\n    sys.stdout.buffer.write(b'\\xff\\xfe'); sys.exit(0)\n"
-                "p = float('nan') if mode == 'nan' else 0.97 if 'banana' in json.dumps(req['state']) else 0.03\n"
-                "print(json.dumps({'answers': {q: {'type': 'noul', 'noul': p} for q in req['questions']},"
-                " 'usage': {'input_tokens': 10}}))\n")
-            seen = Path(home) / "seen.json"
-            me = [sys.executable, str(HERE / "augur.py")]
-
-            def cmd(mode):
-                return [sys.executable, str(stand), mode, str(seen)]
-            with open(Path(home) / "augur.json", "w") as f:
-                json.dump({"backends": {
-                    "stand": {"command": cmd("ok"), "price_per_mtok": 2.0},
-                    "named": {"command": " ".join(cmd("ok")), "model": "m1"},
-                    "fails": {"command": cmd("fail")}, "prose": {"command": cmd("prose")}, "nan": {"command": cmd("nan")},
-                    "slow": {"command": cmd("slow"), "timeout": 0.5}, "bytes": {"command": cmd("bytes")},
-                    "unquoted": {"command": "stand 'open"},
-                    "chain": {"command": me + ["ask", "--request", "-", "--backend", "stand", "--caller", "inner"]},
-                    "bare": {"price_per_mtok": 1.0}}}, f)
-            expect(manifest_findings() == ["augur.json: backends.bare: names no `type`; give it one of command, laya, systemone"],
-                   f"command backends: {manifest_findings()}")
-            ok, reason = available("stand")
-            expect(ok and "answers" in reason, f"command check: {reason}")
-            r = ask("banana", fruit, backend="stand", caller="cmd")
-            sent = json.loads(seen.read_text(encoding="utf-8"))
-            expect(r["backend"] == "stand" and r["answers"]["fruit"]["noul"] == 0.97, f"command ask: {r}")
-            expect(set(sent) == {"questions", "state"} and sent["state"]["text"] == "banana" and "fruit" in sent["questions"],
-                   f"command request: {sent}")
-            with open(Path(home) / "usage.csv") as f:
-                row = list(csv.reader(f))[-1]
-            expect(row[1:3] == ["stand", "cmd"] and row[5:] == ["10", "0.000020"], f"command ledger: {row}")
-            r = ask("banana", fruit, backend="named")
-            expect(json.loads(seen.read_text(encoding="utf-8")).get("model") == "m1" and r["model"] == "m1",
-                   "command: a string command or its model not honoured")
-            r = ask("banana", fruit, backend="chain")
-            expect(r["answers"]["fruit"]["noul"] == 0.97, f"augur ask --request - as a command: {r}")
-            expect(_command_argv({"command": "~/x --flag"}) == [os.path.expanduser("~/x"), "--flag"], "command: ~ not expanded")
-            for name, fragment in (("fails", "exited 3: boom"), ("prose", "not JSON"), ("nan", "not a probability"),
-                                   ("bare", "names no `type`"), ("slow", "no answer in 0.5s"),
-                                   ("bytes", "not JSON"), ("unquoted", "does not parse")):
-                expect(unavailable(lambda: ask("banana", fruit, backend=name), fragment), f"command backend {name}")
-            with open(Path(home) / "augur.json", "w") as f:
-                json.dump({"backends": {"loose": {"comand": ["x"]}}}, f)
-            found = " | ".join(manifest_findings())
-            expect("unknown key 'comand', did you mean 'command'?" in found and "names no `type`" in found,
-                   f"command manifest: {found}")
-
-            # the shipped defaults are configuration of the user's shape: every entry typed, all clean
-            expect(manifest_findings(DEFAULTS_FILE) == [], f"defaults.json: {manifest_findings(DEFAULTS_FILE)}")
-            expect(all(e.get("type") in BACKEND_TYPES for e in _defaults()["backends"].values()),
-                   "defaults.json: an entry names no known type")
-            # a keyless systemone entry, as Ollama serves one; a type change replacing a default whole
-            with open(Path(home) / "augur.json", "w") as f:
-                json.dump({"backends": {
-                    "local": {"type": "systemone", "url": "http://localhost:1/v1/systemone", "model": "nimble", "timeout": 7},
-                    "jev": {"type": "command", "command": cmd("ok")},
-                    "nourl": {"type": "systemone", "model": "m"}, "odd": {"type": "grpc"}}}, f)
-            found = manifest_findings()
-            expect(found == ["augur.json: backends.nourl: missing required key 'url'",
-                             "augur.json: backends.odd: unknown type 'grpc'; known: command, laya, systemone"],
-                   f"typed manifest: {found}")
-            stub.answer = lambda state, qid, q: 0.95 if "banana" in json.dumps(state) else 0.05
-            n = len(stub.requests)
-            ok, reason = available("local")
-            expect(ok and "nimble answers" in reason, f"systemone check asks a real question: {reason}")
-            with open(Path(home) / "usage.csv") as f:
-                row = list(csv.reader(f))[-1]
-            expect(row[1:4] == ["local", "check", "nimble"], f"a check's question is not in the ledger: {row}")
-            r = ask("banana", fruit, backend="local", caller="keyless")
-            url, headers, wait = stub.requests[-1]
-            expect(r["backend"] == "local" and r["model"] == "nimble" and stub.calls[-1]["model"] == "nimble",
-                   f"keyless systemone ask: {r}")
-            expect(url.endswith(":1/v1/systemone") and "Authorization" not in headers and wait == 7,
-                   f"keyless systemone: url {url}, headers {sorted(headers)}, timeout {wait}")
-            expect(all(u.startswith("http://localhost:1/") for u, _, _ in stub.requests[n:]), "keyless: a call left the entry's url")
-            r = ask("banana", fruit, backend="jev")
-            expect(r["answers"]["fruit"]["noul"] == 0.97 and "url" not in _backend("jev")[1],
-                   "a type change did not replace the default whole")
-            expect(unavailable(lambda: ask("x", fruit, backend="nourl"), "systemone backend with no `url`"), "systemone without url")
-            expect(unavailable(lambda: ask("x", fruit, backend="odd"), "unknown type 'grpc'"), "unknown type accepted")
-            with open(Path(home) / "augur.json", "w") as f:
-                json.dump({"backends": {"hosted": {"type": "systemone", "url": "http://h/v1/systemone", "model": "m",
-                                                   "env_key": "AUGUR_SELFTEST_ABSENT_KEY"}}}, f)
-            expect(unavailable(lambda: ask("x", fruit, backend="hosted"), "AUGUR_SELFTEST_ABSENT_KEY unset"),
-                   "a named key that is missing did not refuse")
-            with open(Path(home) / "augur.json", "w") as f:
-                json.dump({"backends": {"jev": {"models_url": "https://api.typesafe.ai/v1/models"}}}, f)
-            expect([f.split(",")[0] for f in manifest_findings()] == ["augur.json: backends.jev: unknown key 'models_url'"],
-                   f"a 0.4 models_url drew no finding: {manifest_findings()}")
-            with open(Path(home) / "augur.json", "w") as f:
-                json.dump({"backends": {"hosted": {"type": "systemone", "url": "http://h/v1/systemone", "model": "m",
-                                                   "env_key": "AUGUR_SELFTEST_ABSENT_KEY"}}}, f)
-            os.environ["AUGUR_SELFTEST_ABSENT_KEY"] = "k2"
-            ask("banana", fruit, backend="hosted")
-            os.environ.pop("AUGUR_SELFTEST_ABSENT_KEY")
-            expect(stub.requests[-1][1].get("Authorization") == "Bearer k2", "a second hosted key was not sent")
-
-            # configure backend: flags and guided prompts share one verify-then-write
-            def run(argv, answers=""):
-                o, saved_in = io.StringIO(), sys.stdin
-                sys.stdin = io.StringIO(answers)          # never a terminal here, so never guided by accident
-                try:
-                    with contextlib.redirect_stdout(o), contextlib.redirect_stderr(o):
-                        code = main(argv) if argv is not None else _guided_backend()
-                finally:
-                    sys.stdin = saved_in
-                return code, o.getvalue()
-
-            def saved():
-                return json.loads((Path(home) / "augur.json").read_text(encoding="utf-8"))
-            (Path(home) / "augur.json").unlink()          # a first backend, before augur.json exists
-            stub.answer = lambda state, qid, q: 0.95 if "banana" in json.dumps(state) else 0.05
-            loc = ["configure", "backend", "loc", "--type", "systemone", "--url", "http://localhost:1/v1/systemone",
-                   "--model", "m:1b", "--price", "0"]
-            code, out = run(loc)
-            expect(code == 0 and saved()["backends"]["loc"] == {"type": "systemone", "url": "http://localhost:1/v1/systemone",
-                                                                "model": "m:1b", "price_per_mtok": 0.0},
-                   f"configure backend by flags: exit {code}, {out}")
-            with open(Path(home) / "usage.csv") as f:
-                row = list(csv.reader(f))[-1]
-            expect(row[1:4] == ["loc", "configure", "m:1b"] and stub.requests[-1][2] == PROBE_TIMEOUT,
-                   f"configure's question: ledger {row}, timeout {stub.requests[-1][2]}")
-            code, out = run(["configure", "backend", "loc", "--timeout", "9"])
-            expect(code == 0 and saved()["backends"]["loc"]["model"] == "m:1b" and saved()["backends"]["loc"]["timeout"] == 9,
-                   f"one flag did not merge over the entry: {saved()}")
-            stub.script = [500]
-            code, out = run(loc[:2] + ["fails"] + loc[3:])
-            expect(code == 3 and "fails" not in saved()["backends"] and "not saved" in out, f"saved unverified: {code} {out}")
-            stub.script = [500]
-            code, out = run(loc[:2] + ["fails"] + loc[3:] + ["--force"])
-            expect(code == 0 and "fails" in saved()["backends"] and "has not answered" in out, f"--force: {code} {out}")
-            for argv, fragment in ((["configure", "backend", "-x", "--url", "http://h"], "error"),
-                                   (["configure", "backend", "b@d", "--type", "command", "--command", "x"], "a name takes"),
-                                   (["configure", "backend", "nu", "--type", "systemone", "--model", "m"], "'url'"),
-                                   (["configure", "backend", "loc", "--command", "x"], "unknown key 'command'"),
-                                   (["configure", "backend", "--type", "command", "--command", "x"], "name the backend"),
-                                   (["configure", "backend", "--list", "--remove", "loc"], "stand alone"),
-                                   (["configure", "backend", "jev", "--force"], "--force saves settings"),
-                                   (["configure", "backend", "u", "--type", "systemone", "--url", "https://me:k@h/v1"], "username, password"),
-                                   (["configure", "backend", "u", "--type", "systemone", "--url", "https://h/v1?key=k"], "query string"),
-                                   (["configure", "backend", "loc", "--price", "nan"], "error"),
-                                   (["configure", "backend", "loc", "--timeout", "0"], "error"),
-                                   (["configure", "backend", "typo", "--default"], "no backend named 'typo'"),
-                                   (["configure", "backend", "--remove", ""], "no backend named ''")):
-                try:
-                    code, out = run(argv)
-                except SystemExit as e:                  # argparse refuses before main returns
-                    code, out = e.code, "error"
-                expect(code == 2 and fragment in out, f"configure backend {argv[2:]}: exit {code}, {out.strip()[-120:]}")
-            code, out = run(["configure", "backend", "loc", "--type", "command", "--command", " ".join(cmd("ok"))])
-            expect(code == 0 and saved()["backends"]["loc"] == {"type": "command", "command": " ".join(cmd("ok"))},
-                   f"a new type did not replace the entry whole: {saved()['backends']['loc']}")
-            code, out = run(["configure", "backend", "loc", "--default"])
-            expect(code == 0 and saved()["backend"] == "loc" and _manifest()["backend"] == "loc", f"--default: {code} {out}")
-            code, out = run(["configure", "backend", "jev", "--model", "jev-9"])
-            expect(code == 0 and saved()["backends"]["jev"] == {"model": "jev-9"} and _backend("jev")[1]["url"].startswith("https"),
-                   f"a shipped name's change is not a merge over it: {saved()['backends'].get('jev')}")
-            code, out = run(["configure", "backend", "--list"])
-            expect(code == 0 and "* loc" in out and "shipped, changed" in out and "yours" in out, f"--list: {out}")
-            code, out = run(["configure", "backend", "jev"])
-            expect(code == 0 and json.loads(out)["origin"] == "shipped, changed", f"show without a terminal: {out}")
-            code, out = run(["configure", "backend", "--remove", "jev"])
-            expect(code == 0 and "jev" not in saved()["backends"] and "shipped settings again" in out, f"--remove jev: {out}")
-            code, out = run(["configure", "backend", "--remove", "loc"])
-            expect(code == 0 and "backend" not in saved() and "jev again" in out, f"--remove the default: {out}")
-            expect(run(["configure", "backend", "--remove", "jev"])[0] == 0 and run(["configure", "backend", "--remove", "zz"])[0] == 2,
-                   "--remove on an untouched shipped name or an unknown one")
-            (Path(home) / "augur.json").write_text('{"backends": null}')
-            code, out = run(["configure", "backend", "--list"])
-            expect(code == 0 and "jev" in out, f"--list over a null `backends`: {code} {out}")
-            (Path(home) / "augur.json").write_text('{"backends": {"x": null}}')
-            code, out = run(["configure", "backend", "--list"])
-            expect(code == 2 and "`backends` must be an object" in out, f"--list over a null entry: {code} {out}")
-            (Path(home) / "augur.json").write_text("{}")
-            code, out = run(["configure", "backend", "hk", "--type", "systemone", "--url", "http://h/v1/systemone",
-                             "--key-env", "AUGUR_SELFTEST_ABSENT_KEY", "--store-key"])
-            expect(code == 3 and "export AUGUR_SELFTEST_ABSENT_KEY=<your key>" in out
-                   and "`augur configure backend hk --store-key` stores one" in out, f"a missing key's remedy: {out}")
-            if sys.platform == "darwin":
-                code, out = run(["configure", "backend", "jev", "--store-key"])
-                expect(code == 2 and "needs a terminal" in out, f"--store-key without a terminal: {out}")
-
-            # guided, against a stand-in Ollama
-            saved_host = os.environ.get("OLLAMA_HOST")
-            os.environ["OLLAMA_HOST"] = "localhost:1"
-            tags = {"models": [{"name": "nim:latest", "digest": "d1", "size": 9e9, "capabilities": ["decision"]},
-                               {"name": "nim:9b-q8_0", "digest": "d1", "size": 9e9, "capabilities": ["decision"]},
-                               {"name": "other:1b", "digest": "d2", "size": 1e9, "capabilities": ["completion"]},
-                               {"name": "old:1b", "digest": "d3", "size": None, "capabilities": None}]}
-            stub.routes = {"/api/version": {"version": "0.35.0"}, "/api/tags": tags,
-                           "/api/pull": b'{"status": "pulling", "total": 4, "completed": 2}\n{"status": "success"}\n'}
-            try:
-                code, out = run(None, "1\n1\n\ny\n")
-                expect(code == 0 and saved()["backends"]["nim"]["model"] == "nim:9b-q8_0" and saved()["backend"] == "nim"
-                       and saved()["backends"]["nim"]["url"] == "http://localhost:1/v1/systemone"
-                       and "other:1b" not in out and "1 other model is not" in out,
-                       f"guided Ollama, latest resolved to its exact tag, made default: {code} {out[-300:]}")
-                code, out = run(None, "1\n4\nfresh:2b\n\nn\n")
-                expect(code == 0 and saved()["backends"]["fresh"]["model"] == "fresh:2b" and "success" in out,
-                       f"guided Ollama pull: {code} {out[-300:]}")
-                code, out = run(None, "1\n1\nnim\nn\n")
-                expect(code == 1 and "augur.json unchanged" in out, f"guided: declining to replace: {code} {out[-200:]}")
-                stub.routes["/api/pull"] = b'{"error": "pull model manifest: file does not exist"}\n'
-                code, out = run(None, "1\n4\nnope:1b\n")
-                expect(code == 3 and "file does not exist" in out, f"guided pull of a missing model: {code} {out[-200:]}")
-                stub.routes["/api/tags"] = b"<html>proxy error</html>"
-                code, out = run(None, "1\n")
-                expect(code == 3 and "not answering" in out, f"guided, a tags reply that is not JSON: {code} {out[-200:]}")
-                stub.routes["/api/tags"] = tags
-                stub.routes["/api/version"] = {"version": "0.34.9"}
-                code, out = run(None, "1\n")
-                expect(code == 3 and "too old" in out, f"guided, an old Ollama: {code} {out[-200:]}")
-                code, out = run(None, f"4\n{' '.join(cmd('ok'))}\n\nscr\nn\n")
-                expect(code == 0 and saved()["backends"]["scr"]["type"] == "command", f"guided command: {code} {out[-200:]}")
-                if sys.platform == "darwin":       # a hosted key: decline storing it, so no keychain is touched
-                    code, out = run(None, "2\nhttps://api.acme.example/v1/systemone\nacme-2\n0.05\n\n\nn\nn\n")
-                    expect(code == 3 and "acme" not in saved()["backends"] and "acme --store-key" in out,
-                           f"guided hosted without its key: {code} {out[-300:]}")
-                code, out = run(None, "")
-                expect(code == 1 and "augur.json unchanged" in out, f"guided, input ends: {code} {out[-200:]}")
-            finally:
-                stub.routes = {}
-                if saved_host is None:
-                    os.environ.pop("OLLAMA_HOST", None)
-                else:
-                    os.environ["OLLAMA_HOST"] = saved_host
-            (Path(home) / "augur.json").write_text("{}")
-
-            # the write: whole, its mode and its link kept, no temporary left behind
-            real = Path(home) / "real.json"
-            real.write_text("{}")
-            real.chmod(0o640)
-            link = Path(home) / "linked.json"
-            link.symlink_to(real)
-            _write_json(link, {"name": "café"})
-            expect(link.is_symlink() and json.loads(real.read_text(encoding="utf-8")) == {"name": "café"}
-                   and (real.stat().st_mode & 0o777) == 0o640 and "café" in real.read_text(encoding="utf-8")
-                   and not list(Path(home).glob("*.tmp")), "_write_json: link, mode, text or a leftover temporary")
-            with _manifest_lock():
-                expect((Path(home) / "augur.json.lock").exists(), "the manifest lock")
-            expect(_acct('    "acct"<blob>="okure"\n    "svce"<blob>="X"\n') == "okure"
-                   and _acct("") == getpass.getuser()
-                   and _acct('    "acct"<blob>=0x636166C3A9  "caf\\303\\251"\n') == "café", "keychain account parse")
-            (Path(home) / "augur.json").write_text("{}")
-
-            def writer(i):
-                with _manifest_lock():
-                    u = _user_manifest()
-                    u["backends"][f"w{i}"] = {"type": "command", "command": "x"}
-                    _write_json(Path(home) / "augur.json", u)
-            ts = [threading.Thread(target=writer, args=(i,)) for i in range(8)]
-            for t_ in ts:
-                t_.start()
-            for t_ in ts:
-                t_.join()
-            expect(sorted(saved()["backends"]) == [f"w{i}" for i in range(8)], f"concurrent writers: {saved()}")
-            (Path(home) / "augur.json").write_text("{}")
-
-            ok, reason = available("laya")
-            expect(not ok and "does not name an interpreter" in reason, f"laya without a venv: {reason}")
-            expect(unavailable(lambda: ask("x", fruit, backend="nope"), "unknown backend"), "unknown backend accepted")
-            with open(Path(home) / "augur.json", "w") as f:
-                f.write("{not json")
-            expect(unavailable(lambda: ask("x", fruit), "not JSON"), "broken manifest accepted")
-            found = manifest_findings()
-            expect(len(found) == 1 and found[0].startswith("augur.json does not parse: "), f"parse finding: {found}")
-        except Exception as e:  # noqa: a selftest reports every failure as a line, never a traceback
+            text, questions, kw = _request(contract.REQUEST)
+            reply = f"import sys; sys.stdin.read(); print({json.dumps(json.dumps(contract.REPLY))})"
+            _write_json(Path(home) / "augur.json", {"backends": {"smoke": {
+                "type": "command", "command": [sys.executable, "-c", reply]}}})
+            r = ask(text, questions, subject=kw["subject"], backend="smoke", caller="selftest")
+            if contract.probability(r) != contract.probability(contract.REPLY):
+                failures.append(f"ask: {r}")
+        except Exception as e:  # noqa: a smoke check reports a failure as a line, never a traceback
             failures.append(f"{type(e).__name__}: {e}")
         finally:
-            urllib.request.urlopen, time.sleep = saved_open, saved_sleep
-            for k, v in saved_env.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+            if saved is None:
+                os.environ.pop("AUGUR_HOME", None)
+            else:
+                os.environ["AUGUR_HOME"] = saved
     for f in failures:
         print(f"FAIL {f}")
     print("selftest FAILED" if failures else "selftest ok")
@@ -2105,7 +1618,7 @@ EXAMPLES = {
   augur check --backend laya                   the same for the local backend
   augur ask -q closers.json -t "A four-seat single for an owner who flies IFR."
   augur calibrate items.json --out run-a/
-  augur selftest                               the client against a stand-in backend, offline
+  augur selftest                               an offline smoke check of the install
   augur schema                                 write the manifest schema for an editor
   augur help install                           the install steps, written for an agent to follow
 
@@ -2275,7 +1788,7 @@ def main(argv):
     c.add_argument("--workers", type=int, default=6, metavar="N", help="parallel calls (default 6)")
     c.add_argument("--out", metavar="DIR", help="directory for per-item means")
     c.add_argument("--compare", metavar="FILE", help="a prior run's per-item means JSON")
-    cmd("selftest", "the client against a stand-in backend: no network, no key, no model")
+    cmd("selftest", "an offline smoke check of the install: no network, no key, no model")
     cmd("schema", "write the manifest schema where an editor can be pointed at it")
     h = cmd("help", "print a guide")
     h.add_argument("topic", choices=["install"])
@@ -2285,7 +1798,7 @@ def main(argv):
     u.add_argument("--dry-run", action="store_true", help="print what would be removed and stop")
     args = p.parse_args(argv)
     if args.cmd == "selftest":
-        return _selftest()
+        return _smoke()
     if args.cmd == "schema":
         path = write_schema()
         print(f"schema: {path}")

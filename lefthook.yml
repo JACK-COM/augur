@@ -4,4 +4,4 @@ pre-commit:
     panoply-lib:
       run: ../panoply-lib/sync.sh --check augur
     selftest:
-      run: python3 src/augur/augur.py selftest
+      run: python3 -m unittest discover -s tests -t . && python3 src/augur/augur.py selftest
