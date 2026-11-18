@@ -128,7 +128,7 @@ def _live_check(backend):
                 a = r["answers"].get(q, {})
                 got = a.get("noul") if a.get("type") == "noul" else None
                 if got is None or (got >= t) != want:
-                    wrong.append(f"  {it['id']}.{q}: expected {'at or above' if want else 'below'} {t}, got {got}")
+                    wrong.append(f"  {guard.relay(it['id'], 60)}.{guard.relay(q, 60)}: expected {'at or above' if want else 'below'} {t}, got {got}")
         n = sum(len(it["labels"]) for it in spec["items"])
         assert r is not None                      # the loop above ran: a live check has items
         print(f"{'ok' if not wrong else 'wrong'}: {n - len(wrong)} of {n} answers right at {t}  backend {r['backend']}  "
@@ -146,6 +146,6 @@ def _live_check(backend):
     a = r["answers"]
     fruit, fish = (a.get("fruit") or {}).get("noul"), (a.get("fish") or {}).get("noul")
     ok = isinstance(fruit, float) and isinstance(fish, float) and fruit > 0.8 and fish < 0.2
-    print(f"{'ok' if ok else 'wrong'}: backend {r['backend']}  model {r['model']}  fruit {a['fruit']['noul']}  "
-          f"fish {a['fish']['noul']}  tokens {r['usage']['input_tokens']}")
+    print(f"{'ok' if ok else 'wrong'}: backend {r['backend']}  model {r['model']}  fruit {fruit}  "
+          f"fish {fish}  tokens {r['usage']['input_tokens']}")
     return 0 if ok else 1

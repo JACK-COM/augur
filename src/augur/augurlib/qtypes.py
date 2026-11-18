@@ -44,6 +44,7 @@ def _check_answers(answers):
         probs += [(f"probabilities.{k}", v) for k, v in dist.items()]
         for k, v in probs:
             if not (isinstance(v, (int, float)) and math.isfinite(v) and 0 <= v <= 1):
-                raise errors.AugurUnavailable(f"answer {qid!r} has {k}={v!r}, not a probability")
+                raise errors.AugurUnavailable(f"answer {guard.relay(qid, 60)!r} has {guard.relay(k, 80)}="
+                                              f"{guard.relay(repr(v), 40)}, not a probability")
         if "score" in a and not (isinstance(a["score"], (int, float)) and math.isfinite(a["score"])):
             raise errors.AugurUnavailable(f"answer {qid!r} has score={a['score']!r}, not a finite number")

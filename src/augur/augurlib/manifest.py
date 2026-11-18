@@ -119,8 +119,8 @@ def _manifest():
         try:
             with open(p, encoding="utf-8") as f:
                 user = json.load(f)
-        except ValueError as e:
-            raise errors.AugurUnavailable(f"{p}: not JSON ({e})")
+        except (ValueError, RecursionError) as e:
+            raise errors.AugurUnavailable(f"{p}: not JSON ({str(e)[:120]})")
         if not isinstance(user, dict) or not isinstance(user.get("backends") or {}, dict):
             raise errors.AugurUnavailable(f"{p}: not an object of settings; `augur check` names the fault")
         if "backend" in user:
@@ -162,7 +162,10 @@ def _user_manifest():
     p = paths.manifest()
     if not p.exists():
         return {"backends": {}}
-    raw = json.loads(p.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except RecursionError:
+        raise ValueError(f"{p}: nests too deep to read") from None
     if not isinstance(raw, dict):
         raise ValueError(f"{p}: not a JSON object")
     b = raw.setdefault("backends", {})

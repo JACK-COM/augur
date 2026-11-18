@@ -70,22 +70,47 @@ def _remove_locked(name):
             return 0
         print(f"no backend named {name!r} in {paths.home() / 'augur.json'}", file=sys.stderr)
         return 2
+    before = manifest._manifest()
     del b[name]
+    if name not in shipped and user.get("backend") == name:
+        del user["backend"]
+    # a remove that leaves the default sending text off this machine, where it did not before
+    # (the shipped default comes back, or a shipped entry's own url does), is a person's choice
+    after_name = user.get("backend") or manifest._defaults()["backend"]
+    after = manifest._merged(shipped.get(after_name) or {}, b.get(after_name) or {}) if after_name in shipped or after_name in b else {}
+    was = before["backends"].get(saved_default()) or {}
+    t_after = manifest._type(after)
+    if t_after in backends.TYPES and backends.TYPES[t_after].away(after) and \
+            (after_name != saved_default() or after.get("url") != was.get("url")):
+        if not guard.person_confirms(f"Remove {name}? The default is then {after_name}, and every call that names no "
+                                     f"backend sends its text to {btype.host(after.get('url') or '')}.", [], "remove it"):
+            print(f"{name} not removed: it would leave a default that sends text off this machine, which a person "
+                  f"chooses at a terminal. Run it yourself:\n  augur configure backend --remove {shlex.quote(name)}",
+                  file=sys.stderr)
+            return 1
     said = f"removed {name}"
     if name in shipped:
         said += f"; {name} runs on the shipped settings again"
-    elif user.get("backend") == name:
-        del user["backend"]
+    elif "backend" not in user and before["backend"] == name:
         said += f"; it was the default, which is {manifest._defaults()['backend']} again"
     print(f"{said} ({fsio._write_json(paths.home() / 'augur.json', user)})")
     return 0
+
+
+def saved_default():
+    """The default augur.json names, else the shipped one: never AUGUR_BACKEND, which is one
+    run's choice and must not become every later run's."""
+    try:
+        return manifest._user_manifest().get("backend") or manifest._defaults()["backend"]
+    except (ValueError, OSError):
+        return manifest._defaults()["backend"]
 
 
 def default_refused(name, cfg, t):
     """None when NAME may become the default; else the exit code, after saying why. A default
     that sends text off this machine receives every later call that names no backend, so a
     person chooses it at a terminal, as they confirmed the entry itself."""
-    if not backends.TYPES[t].away(cfg) or manifest._manifest()["backend"] == name:
+    if not backends.TYPES[t].away(cfg) or saved_default() == name:
         return None
     if guard.person_confirms(f"Make {name} the default? Every call that names no backend then sends its text to "
                              f"{btype.host(cfg.get('url') or '')}.", [], "make it the default"):

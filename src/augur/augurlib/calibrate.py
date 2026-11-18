@@ -106,11 +106,13 @@ def measure(spec: dict, name: str, qs: dict, items: List[dict], runs: int, worke
                 row = json.loads(line)
             except ValueError:
                 continue                      # a line cut short by the interruption
-            if isinstance(row, dict) and row.get("id") in scores and row.get("fp") == prints[row["id"]]:
+            if not (isinstance(row, dict) and isinstance(row.get("id"), (str, int)) and isinstance(row.get("values"), dict)):
+                continue                      # not a row this journal writes
+            if row["id"] in scores and row.get("fp") == prints[row["id"]]:
                 done[row["id"]] = done.get(row["id"], 0) + 1
-                tokens.append(int(row.get("tokens") or 0))
-                for q, v in (row.get("values") or {}).items():
-                    if q in scores[row["id"]] and v is not None:
+                tokens.append(row["tokens"] if isinstance(row.get("tokens"), int) and row["tokens"] >= 0 else 0)
+                for q, v in row["values"].items():
+                    if q in scores[row["id"]] and isinstance(v, (int, float)) and not isinstance(v, bool):
                         scores[row["id"]][q].append(float(v))
     todo = [it for it in items for _ in range(max(0, runs - done.get(it["id"], 0)))]
     out = open(journal, "a", encoding="utf-8") if journal else None
@@ -162,17 +164,17 @@ def report(spec: dict, name: str, cfg: dict, qs: dict, items: List[dict], runs: 
     if shape:
         log(f"  texts: median {shape['median']} chars, p10 {shape['p10']}, p90 {shape['p90']}; "
             f"a threshold measured here may not hold for texts far outside that range")
-    classes = sorted({it.get("class", "?") for it in items})
+    classes = sorted({str(it.get("class", "?")) for it in items})
     prev = previous if isinstance(previous, dict) else None
     for q in qs:
-        log(f"\n[{q}]")
+        log(f"\n[{guard.relay(q, 60)}]")
         pos: list = [means[it["id"]][q] for it in items if it["labels"].get(q) is True and means[it["id"]][q] is not None]
         neg: list = [means[it["id"]][q] for it in items if it["labels"].get(q) is False and means[it["id"]][q] is not None]
         if pos and neg:
             log(f"  AUROC {_auroc(pos, neg):.3f}   positives n={len(pos)} min {min(pos):.2f} mean {st.mean(pos):.2f}"
                 f"   negatives n={len(neg)} max {max(neg):.2f} mean {st.mean(neg):.2f}")
         for c in classes:
-            v: list = [means[it["id"]][q] for it in items if it.get("class") == c and means[it["id"]][q] is not None]
+            v: list = [means[it["id"]][q] for it in items if str(it.get("class", "?")) == c and means[it["id"]][q] is not None]
             if v:
                 v.sort()
                 log(f"  {guard.relay(c, 10):10s} n={len(v):3d}  mean {st.mean(v):.2f}  min {v[0]:.2f}  med {v[len(v) // 2]:.2f}  max {v[-1]:.2f}")
@@ -181,10 +183,10 @@ def report(spec: dict, name: str, cfg: dict, qs: dict, items: List[dict], runs: 
             if sds:
                 log(f"  run-to-run sd: mean {st.mean(sds):.3f}  max {max(sds):.3f}  n>0.05 {sum(1 for s in sds if s > 0.05)}")
         if prev is not None and compare:
-            d = [abs(means[i][q] - prev[i][q]) for i in means if i in prev and q in prev[i]
-                 and means[i][q] is not None and prev[i][q] is not None]
+            d = [abs(means[i][q] - prev[i][q]) for i in means if isinstance(prev.get(i), dict) and q in prev[i]
+                 and means[i][q] is not None and isinstance(prev[i][q], (int, float)) and not isinstance(prev[i][q], bool)]
             if d:
-                log(f"  vs {Path(compare).name}: mean |diff| {st.mean(d):.3f}  max {max(d):.2f}  n={len(d)}")
+                log(f"  vs {guard.relay(Path(compare).name, 80)}: mean |diff| {st.mean(d):.3f}  max {max(d):.2f}  n={len(d)}")
     return means
 
 
@@ -201,7 +203,7 @@ def calibrate(spec: dict, *, backend: Optional[str] = None, runs: int = 1, limit
     qs = {k: v for k, v in spec["questions"].items() if not questions or k in questions}
     unknown = sorted(set(questions or []) - set(spec["questions"]))
     if unknown:
-        raise ValueError(f"no question named {', '.join(map(repr, unknown))}; the file has {', '.join(spec['questions'])}")
+        raise ValueError(f"no question named {', '.join(map(repr, unknown))}; the file has {guard.relay(', '.join(spec['questions']), 300)}")
     items = spec["items"][:limit] if limit else spec["items"]
     journal = None
     if out_dir:

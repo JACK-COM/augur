@@ -1,4 +1,4 @@
-# GENERATED from panoply-lib/web.py (b4a5413+uncommitted) by sync.sh: edit the source and rerun sync.sh, never this copy.
+# GENERATED from panoply-lib/web.py (bfb4e78) by sync.sh: edit the source and rerun sync.sh, never this copy.
 """web: the one HTTP client the Panoply's pieces use, bounded so a hostile or slow server
 cannot hold a piece, redirect it somewhere it was not sent, or walk it into this machine's
 own network.
@@ -22,6 +22,7 @@ own network.
 import http.client
 import os
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -99,6 +100,13 @@ def origin(url: str) -> Tuple[str, str, Optional[int]]:
     return u.scheme, (u.hostname or "").lower(), port
 
 
+def same_site(old: str, new: str) -> bool:
+    """The same origin, or the same host moving from http to https on the default ports:
+    an upgrade, which carries nothing anywhere new."""
+    a, b = origin(old), origin(new)
+    return a == b or (a[1] == b[1] and (a[0], a[2], b[0], b[2]) == ("http", 80, "https", 443))
+
+
 class _Redirects(urllib.request.HTTPRedirectHandler):
     def __init__(self, follow: Optional[str], hops: int):
         self.follow = follow
@@ -108,7 +116,7 @@ class _Redirects(urllib.request.HTTPRedirectHandler):
         newurl = urllib.parse.urljoin(req.full_url, newurl)
         if self.follow not in ("same-origin", "any"):
             raise Redirected(newurl, code, "this request follows no redirect")
-        if self.follow == "same-origin" and origin(newurl) != origin(req.full_url):
+        if self.follow == "same-origin" and not same_site(req.full_url, newurl):
             raise Redirected(newurl, code, "another origin; fetch that URL itself")
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is not None and origin(newurl) != origin(req.full_url):
@@ -128,16 +136,33 @@ def _pinned(host: str):  # type: ignore[no-untyped-def]
     return connect
 
 
-class _PinnedHTTP(http.client.HTTPConnection):
-    def __init__(self, *a: Any, **k: Any):
-        super().__init__(*a, **k)
-        self._create_connection = _pinned(self.host)
+def _watched(make, deadline: Optional[Deadline]):  # type: ignore[no-untyped-def]
+    """`make` (a create_connection), with the socket shut down when `deadline` passes: a
+    server dripping its headers or an error body a byte at a time defeats every per-read
+    timeout, and only closing the socket under the blocked read ends it."""
+    def connect(address, timeout=None, source_address=None):  # type: ignore[no-untyped-def]
+        sock = make(address, timeout, source_address)
+        left = deadline.left() if deadline else None
+        if left is not None:
+            def cut() -> None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            t = threading.Timer(left, cut)
+            t.daemon = True
+            t.start()
+        return sock
+    return connect
 
 
-class _PinnedHTTPS(http.client.HTTPSConnection):
-    def __init__(self, *a: Any, **k: Any):
-        super().__init__(*a, **k)
-        self._create_connection = _pinned(self.host)      # TLS still verifies the name
+def _connection(base: Any, pin: bool, deadline: Optional[Deadline]) -> Any:
+    class Conn(base):  # type: ignore[valid-type,misc]
+        def __init__(self, *a: Any, **k: Any):
+            super().__init__(*a, **k)
+            # pinned: the one public address the host resolved to (TLS still verifies the name)
+            self._create_connection = _watched(_pinned(self.host) if pin else socket.create_connection, deadline)
+    return Conn
 
 
 def _proxied(req: urllib.request.Request) -> bool:
@@ -161,29 +186,39 @@ def _unwrap(open_: Any) -> Any:
 
 
 class _GuardHTTP(urllib.request.HTTPHandler):
+    def __init__(self, pin: bool, deadline: Optional[Deadline]):
+        super().__init__()
+        self.pin, self.deadline = pin, deadline
+
     def http_open(self, req):  # type: ignore[no-untyped-def]
-        if _proxied(req):
+        pin = self.pin and not _proxied(req)
+        if self.pin and not pin:
             _precheck(req)
-            return self.do_open(http.client.HTTPConnection, req)
-        return _unwrap(lambda: self.do_open(_PinnedHTTP, req))
+        return _unwrap(lambda: self.do_open(_connection(http.client.HTTPConnection, pin, self.deadline), req))
 
 
 class _GuardHTTPS(urllib.request.HTTPSHandler):
+    def __init__(self, pin: bool, deadline: Optional[Deadline]):
+        super().__init__()
+        self.pin, self.deadline = pin, deadline
+
     def https_open(self, req):  # type: ignore[no-untyped-def]
-        if _proxied(req):
+        pin = self.pin and not _proxied(req)
+        if self.pin and not pin:
             _precheck(req)
-            return self.do_open(http.client.HTTPSConnection, req, context=getattr(self, "_context", None))
-        return _unwrap(lambda: self.do_open(_PinnedHTTPS, req, context=getattr(self, "_context", None)))
+        return _unwrap(lambda: self.do_open(_connection(http.client.HTTPSConnection, pin, self.deadline), req,
+                                            context=getattr(self, "_context", None)))
 
 
 def opener(follow: Optional[str] = None, guard_private: bool = False, hops: int = 8,
-           *handlers: Any, direct: bool = False) -> urllib.request.OpenerDirector:
-    """An opener with environment proxies (none when `direct`), the redirect policy, and,
-    with `guard_private`, connections only to public addresses. `handlers` are added after."""
+           *handlers: Any, direct: bool = False, deadline: Optional[Deadline] = None) -> urllib.request.OpenerDirector:
+    """An opener with environment proxies (none when `direct`), the redirect policy, with
+    `guard_private` connections only to public addresses, and with `deadline` every socket
+    shut down when it passes. `handlers` are added after."""
     chain: list = [urllib.request.ProxyHandler({} if direct else urllib.request.getproxies_environment()),
                    _Redirects(follow, hops)]
-    if guard_private:
-        chain += [_GuardHTTP(), _GuardHTTPS()]
+    if guard_private or deadline:
+        chain += [_GuardHTTP(guard_private, deadline), _GuardHTTPS(guard_private, deadline)]
     return urllib.request.build_opener(*chain, *handlers)
 
 
@@ -196,7 +231,7 @@ def open_url(req: Any, timeout: float, deadline: Optional[Deadline] = None, foll
     url = req.full_url if isinstance(req, urllib.request.Request) else str(req)
     # a loopback host is reached directly: a proxy the environment names would carry this
     # machine's own traffic, and any key on it, to another one
-    return opener(follow, guard_private, hops, direct=guard.is_loopback(url)).open(req, timeout=t)
+    return opener(follow, guard_private, hops, direct=guard.is_loopback(url), deadline=deadline).open(req, timeout=t)
 
 
 def read(resp: Any, cap: int, deadline: Optional[Deadline] = None, chunk: int = 65536) -> bytes:
@@ -207,8 +242,15 @@ def read(resp: Any, cap: int, deadline: Optional[Deadline] = None, chunk: int = 
     while True:
         if deadline:
             deadline.check("reading the response")
-        part = resp.read1(chunk) if hasattr(resp, "read1") else resp.read(chunk)
+        try:
+            part = resp.read1(chunk) if hasattr(resp, "read1") else resp.read(chunk)
+        except (OSError, http.client.HTTPException):
+            if deadline:
+                deadline.check("reading the response")
+            raise
         if not part:
+            if deadline:
+                deadline.check("reading the response")   # the socket was cut at the deadline, not ended
             return bytes(out)
         out += part
         if len(out) > cap:
@@ -233,6 +275,14 @@ def _selftest() -> None:
             elif self.path == "/away":
                 self.send_response(302)
                 self.send_header("Location", f"http://localhost:{port}/end"); self.end_headers()
+            elif self.path == "/hdrip":
+                self.wfile.write(b"HTTP/1.1 200 OK\r\nX-A: ")
+                for _ in range(100):
+                    try:
+                        self.wfile.write(b"a"); self.wfile.flush()
+                    except OSError:
+                        return
+                    time.sleep(0.05)
             elif self.path == "/drip":
                 self.send_response(200); self.send_header("Content-Length", "100"); self.end_headers()
                 for _ in range(100):
@@ -275,6 +325,13 @@ def _selftest() -> None:
             raise AssertionError("drip outlived the deadline")
         except TimeoutError:
             assert time.monotonic() - t0 < 2, "deadline overshot"
+        d = Deadline(0.6)
+        t0 = time.monotonic()
+        try:
+            read(open_url(base + "/hdrip", 5, deadline=d), 1000, d)
+            raise AssertionError("a header drip outlived the deadline")
+        except (TimeoutError, OSError, http.client.HTTPException, urllib.error.URLError):
+            assert time.monotonic() - t0 < 2, "header drip overshot the deadline"
         try:
             open_url(base + "/end", 5, guard_private=True)
             raise AssertionError("loopback reached under guard_private")
@@ -282,6 +339,9 @@ def _selftest() -> None:
             pass
         assert origin("https://H.example/x") == origin("https://h.example:443/y")
         assert origin("http://h.example/") != origin("https://h.example/")
+        assert same_site("http://h.example/a", "https://h.example/b")
+        assert not same_site("https://h.example/a", "http://h.example/b")      # never down
+        assert not same_site("http://h.example/a", "https://h.example:8443/b")
     with mock.patch.dict(os.environ, {"PANOPLY_DEADLINE": str(time.time() + 5)}):
         assert 4 < (Deadline(60).left() or 0) <= 5 and 4 < (Deadline().left() or 0) <= 5
     for raw in (str(time.time() - 5), str(time.time() + 5000), "soon"):

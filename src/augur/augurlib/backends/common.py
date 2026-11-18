@@ -130,20 +130,31 @@ def run_capped(argv: list, stdin: str, timeout: float, cap: int) -> Tuple[int, s
     p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert p.stdin is not None and p.stdout is not None and p.stderr is not None
     try:
-        try:
-            p.stdin.write(stdin.encode("utf-8", "surrogatepass"))
-            p.stdin.close()
-        except BrokenPipeError:
-            pass                              # it stopped reading; its exit code says why
+        # stdin is written inside the same timed loop as the reads: a script that never reads
+        # it would otherwise block the write, and the timeout with it, past a 64 KB pipe
+        todo = memoryview(stdin.encode("utf-8", "surrogatepass"))
         out, err, end = bytearray(), bytearray(), time.monotonic() + timeout
         sel = selectors.DefaultSelector()
         sel.register(p.stdout, selectors.EVENT_READ, out)
         sel.register(p.stderr, selectors.EVENT_READ, err)
+        os.set_blocking(p.stdin.fileno(), False)
+        sel.register(p.stdin, selectors.EVENT_WRITE, None)
         while sel.get_map():
             left = end - time.monotonic()
             if left <= 0:
                 raise subprocess.TimeoutExpired(argv, timeout)
             for key, _ in sel.select(left):
+                if key.data is None:              # stdin
+                    try:
+                        todo = todo[os.write(key.fd, todo[:65536]):]
+                    except (BrokenPipeError, BlockingIOError) as e:
+                        if isinstance(e, BlockingIOError):
+                            continue
+                        todo = todo[len(todo):]   # it stopped reading; its exit code says why
+                    if not todo:
+                        sel.unregister(p.stdin)
+                        p.stdin.close()
+                    continue
                 chunk = os.read(key.fd, 65536)
                 if not chunk:
                     sel.unregister(key.fileobj)

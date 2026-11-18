@@ -92,7 +92,7 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
 def available(cfg: dict) -> Tuple[bool, str]:
     try:
         r = ask(cfg, {"text": "banana"}, {"fruit": qtypes.noul("Is the word in `text` the name of a fruit?")}, None, 60, 0)
-        return True, f"{r['model']} on {r.get('device', '?')}, context {r.get('max_len', '?')}"
+        return True, f"{r['model']} on {guard.relay(r.get('device', '?'), 20)}, context {guard.relay(r.get('max_len', '?'), 20)}"
     except (errors.AugurUnavailable, ValueError, OSError) as e:
         return False, str(e)
 
@@ -101,7 +101,7 @@ def gates(new: dict, old: dict) -> List[str]:
     out = []
     if new.get("python") and new.get("python") != old.get("python"):
         out.append(f"run  {new['python']}  as laya's interpreter, each text Augur asks on its stdin")
-    if new.get("python") and new.get("checkpoint") != old.get("checkpoint"):
+    if new.get("checkpoint") != old.get("checkpoint") or (new.get("python") != old.get("python") and new.get("python")):
         # a checkpoint is weights the worker loads, which can be code, from a path or a download
         out.append(f"load  {new.get('checkpoint')}  as laya's checkpoint")
     return out

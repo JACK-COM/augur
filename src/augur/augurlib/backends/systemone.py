@@ -140,7 +140,7 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
             ra = e.headers.get("retry-after") if e.headers else None
             if (e.code == 429 or 500 <= e.code < 600) and not last:
                 e.close()
-                time.sleep(backoff(attempt, ra))
+                time.sleep(min(backoff(attempt, ra), timeout))
                 continue
             detail = guard.relay(e.read(4096).decode(errors="ignore"), 300)
             e.close()

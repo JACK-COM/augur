@@ -12,6 +12,9 @@ from .. import calibrate, client, errors, manifest, request
 from .base import Verb, bad_input, count, unavailable
 
 
+REQUESTS_CAP = 100_000      # lines in one run, each held until the pool starts
+
+
 def args(s: argparse.ArgumentParser) -> None:
     s.add_argument("--workers", type=count, metavar="N",
                    help="parallel calls (default: the entry's `workers`, else 1 for a server on this machine, else 6)")
@@ -35,20 +38,23 @@ def drift(texts: List[Any], shape: dict) -> Optional[str]:
 
 def run(a: argparse.Namespace) -> int:
     try:
-        reqs = []
+        reqs: list = []
         n = 0
         while True:
             line = sys.stdin.readline(request.REQUEST_CAP + 1)
             if not line:
                 break
             n += 1
+            if len(reqs) >= REQUESTS_CAP:
+                raise ValueError(f"more than {REQUESTS_CAP} requests; split the file")
             if line.strip():
                 try:
                     reqs.append(request._request(request.load(line, f"line {n}", text=True)))
                 except ValueError as e:
                     raise ValueError(f"line {n}: {e}") from None
         shape = request.load(a.against, "--against") if a.against else {}
-        if not isinstance(shape, dict):
+        if not (isinstance(shape, dict) and all(isinstance(shape.get(k, 0), (int, float)) and not isinstance(shape.get(k, 0), bool)
+                                                for k in ("p10", "median", "p90"))):
             raise ValueError("--against is not a calibrate run's shape file")
         name, cfg, t = manifest._backend(a.backend)
     except errors.AugurUnavailable as e:
