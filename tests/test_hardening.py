@@ -77,9 +77,10 @@ class Hardening(AugurCase):
         main(["configure", "backend", "jev", "--default"])
         self.assertEqual(target.read_text(), "keep me")
 
+    @mock.patch("time.sleep", lambda s: None)
     def test_a_cut_reply_or_a_bad_manifest_is_unavailable(self):
         self.stub.answer = lambda *a: (_ for _ in ()).throw(http.client.IncompleteRead(b"x"))
-        self.assertTrue(unavailable(lambda: ask("x", self.fruit), "network or body"))
+        self.assertTrue(unavailable(lambda: ask("x", self.fruit), "retries exhausted"))
         (Path(self.home) / "augur.json").write_text("[]")
         self.assertTrue(unavailable(lambda: ask("x", self.fruit), "not an object"))
         self.write({"jev": ["url"]})

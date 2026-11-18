@@ -87,6 +87,7 @@ TYPE = common.BackendType(
                                    "It reads {questions, state, model?} on stdin and prints {answers, model?, usage?}."},
         "model": {"type": "string", "description": "Sent as `model` in every request; --model overrides it."},
         "models": common.MODELS,
+        "workers": common.WORKERS,
         "timeout": common.TIMEOUT,
         "price_per_mtok": common.PRICE}},
     ask=ask, describe=describe, flags=("command", "model"),

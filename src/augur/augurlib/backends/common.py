@@ -15,6 +15,8 @@ VAR_CHARS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 PRICE = {"type": "number", "description": "USD per million input tokens, for the usage ledger."}
 TIMEOUT = {"type": "number", "description": "Seconds to wait for an answer (default 60)."}
 TYPE = {"type": "string", "description": "The protocol this backend speaks: systemone, laya or command."}
+WORKERS = {"type": "integer", "minimum": 1,
+           "description": "How many calls `augur calibrate` and `augur score` make at once (default: 1 on this machine, else 6)."}
 MODELS = {"type": "array", "items": {"type": "string"},
           "description": "Other models a request may name with `model`; the entry's own is always allowed."}
 

@@ -17,6 +17,8 @@ def _request(req):
         raise ValueError(f"unknown request key {unknown[0]!r}; known: {', '.join(sorted(REQUEST_KEYS))}")
     if not isinstance(req.get("questions"), dict) or not req["questions"]:
         raise ValueError("`questions` must be a non-empty object of named questions")
+    if len(req["questions"]) > 64:
+        raise ValueError("at most 64 questions in one request")
     if ("text" in req) == ("state" in req):
         raise ValueError("give exactly one of `text` (a string) and `state` (an object)")
     if "text" in req and not isinstance(req["text"], str):

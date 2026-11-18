@@ -1,6 +1,7 @@
 """The client API: ask a backend typed questions about a text, one call or a batch with a
 re-ask near the threshold, and probe whether a backend answers.
 """
+import sys
 import uuid
 
 from . import backends
@@ -11,6 +12,7 @@ from . import qtypes
 
 
 MAX_BATCH = 20
+MAX_QUESTIONS = 64
 
 
 REASK_BAND = 0.2
@@ -54,6 +56,8 @@ def ask(state, questions, *, subject=None, siblings=None, backend=None, model=No
         state["siblings"] = list(siblings)
     if uid:
         state["uid"] = uuid.uuid4().hex
+    if len(questions) > MAX_QUESTIONS:
+        raise ValueError(f"{len(questions)} questions in one call; at most {MAX_QUESTIONS}, each read against the whole text")
     name, cfg, t = manifest._backend(backend)
     if model and model != backends.TYPES[t].own_model(cfg) and model not in (cfg.get("models") or []):
         # a request's `model` picks among what the entry allows, never any model or checkpoint:
@@ -70,6 +74,9 @@ def _answer(name, cfg, t, state, questions, model, timeout, retries, caller):
     except errors.NoKey as e:
         raise errors.NoKey(f"{e}; `augur configure backend {name} --store-key` stores one") from None
     qtypes._check_answers(resp["answers"])
+    if resp.get("truncated"):
+        print(f"augur: {name} cut the text to its context ({resp.get('max_len', '?')} tokens); "
+              f"its answers cover the start only", file=sys.stderr)
     resp["backend"] = name
     ledger._log(name, caller, resp["model"], len(questions), resp["usage"]["input_tokens"], float(cfg.get("price_per_mtok") or 0))
     return resp

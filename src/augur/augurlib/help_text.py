@@ -195,6 +195,11 @@ and may add `subject`, `siblings` (a list), `model` and `caller`. Any other key 
 flag given beside --request wins over the request's field. Exit 2 is bad input, exit 3 an
 unavailable backend; the answers are at `answers.<name>`, a `noul` as a probability from 0 to 1.
 """,
+    "score": """examples:
+  augur score < requests.jsonl > replies.jsonl     one reply per line, in order; {"error": ...} for a failed one
+  augur score --against run-jev/shape-jev.json < passages.jsonl
+                                                   warn when these texts are far from the calibrated lengths
+""",
     "calibrate": """examples:
   augur calibrate items.json --out run-a/
                                                every item's mean probability per question, AUROC against

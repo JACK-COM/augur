@@ -12,8 +12,10 @@ def args(c: argparse.ArgumentParser) -> None:
     c.add_argument("--runs", type=int, default=1, metavar="N", help="repeats per item (default 1)")
     c.add_argument("--limit", type=int, metavar="N", help="first N items only")
     c.add_argument("--questions", metavar="a,b", help="comma-separated subset of the file's questions")
-    c.add_argument("--workers", type=int, default=6, metavar="N", help="parallel calls (default 6)")
-    c.add_argument("--out", metavar="DIR", help="directory for per-item means")
+    c.add_argument("--workers", type=int, metavar="N",
+                   help="parallel calls (default: the entry's `workers`, else 1 for a server on this machine, else 6)")
+    c.add_argument("--out", metavar="DIR", help="directory for the answers as they land and the per-item means")
+    c.add_argument("--resume", action="store_true", help="with --out, ask only what an interrupted run left unasked")
     c.add_argument("--compare", metavar="FILE", help="a prior run's per-item means JSON")
 
 
@@ -29,9 +31,11 @@ def run(a: argparse.Namespace) -> int:
     try:
         measure.calibrate(spec, backend=a.backend, runs=a.runs, limit=a.limit,
                           questions=[x.strip() for x in a.questions.split(",")] if a.questions else None,
-                          workers=a.workers, out_dir=a.out, compare=a.compare)
+                          workers=a.workers, out_dir=a.out, compare=a.compare, resume=a.resume)
     except errors.AugurUnavailable as e:
         return unavailable(e)
+    except ValueError as e:
+        return bad_input(e)
     return 0
 
 

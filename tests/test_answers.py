@@ -20,8 +20,10 @@ class Answers(AugurCase):
         stub.answer = lambda state, qid, q: 0.9
         stub.script = [429, 429]
         self.assertTrue(ask("x", fruit)["answers"]["fruit"]["noul"] == 0.9, "429: not retried to an answer")
-        stub.script = [500]
-        self.assertTrue(unavailable(lambda: ask("x", fruit), "HTTP 500"), "500: not reported")
+        stub.script = [500, 503]
+        self.assertTrue(ask("x", fruit)["answers"]["fruit"]["noul"] == 0.9, "5xx: not retried to an answer")
+        stub.script = [500] * 6
+        self.assertTrue(unavailable(lambda: ask("x", fruit), "HTTP 500 (retries exhausted)"), "500: not reported")
 
 
 if __name__ == "__main__":

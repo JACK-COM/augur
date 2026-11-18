@@ -2,6 +2,6 @@
 it takes and what it runs. `cli.main` builds the command line from `VERBS` in this order, so
 a new verb is one declaration in one module plus its module in the line below.
 """
-from . import ask, calibrate, check, configure, setup
+from . import ask, calibrate, check, configure, score, setup
 
-VERBS = (*check.VERBS, *configure.VERBS, *ask.VERBS, *calibrate.VERBS, *setup.VERBS)
+VERBS = (*check.VERBS, *configure.VERBS, *ask.VERBS, *score.VERBS, *calibrate.VERBS, *setup.VERBS)

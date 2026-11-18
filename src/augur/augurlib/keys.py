@@ -8,6 +8,8 @@ import subprocess
 import shlex
 import sys
 
+from .backends import systemone
+
 
 def _keychain_account(service):
     """The account an existing item for SERVICE is stored under, else the login name. `-U` updates
@@ -51,6 +53,7 @@ def _store_key(name, cfg):
         if r.returncode:
             print(f"security exited {r.returncode}; no key stored", file=sys.stderr)
             return 3
+        systemone.forget()                  # the next read is the key just stored
         return 0
     if not env:
         print(f"{name} keeps its key in the macOS keychain only; give it --key-env to read one from the "

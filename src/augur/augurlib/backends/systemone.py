@@ -1,6 +1,7 @@
 """The systemone backend: TypeSafe's System One API over HTTP, which Jev's host and Ollama
 0.35+ (at /v1/systemone) both serve, so any such model is a `url` and a `model`.
 """
+import functools
 import http.client
 import json
 import os
@@ -32,18 +33,44 @@ def key(cfg: dict) -> Optional[str]:
     if not service and not env:
         return None
     if service:
-        try:
-            out = subprocess.run(["security", "find-generic-password", "-s", service, "-w"],
-                                 capture_output=True, text=True, timeout=10)
-            if out.returncode == 0 and out.stdout.strip():
-                return out.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
+        found = keychain(service)
+        if found:
+            return found
     k = os.environ.get(env, "").strip() if env else ""
     if k:
         return k
     raise errors.NoKey("no key: " + " and ".join(
         ([f"keychain service {service} empty"] if service else []) + ([f"{env} unset"] if env else [])))
+
+
+def backoff(attempt: int, retry_after: Optional[str]) -> float:
+    """Seconds before the next try: what the server asked, capped, else doubling from one
+    second with jitter, so parallel callers that failed together do not retry together."""
+    import random
+    try:
+        if retry_after:
+            return min(float(retry_after), RETRY_AFTER_CAP)
+    except ValueError:                        # an HTTP-date Retry-After is legal; back off on the schedule
+        pass
+    return min(RETRY_AFTER_CAP, 2.0 ** attempt) * random.uniform(0.5, 1.0)
+
+
+@functools.lru_cache(maxsize=None)
+def keychain(service: str) -> Optional[str]:
+    """The keychain item's secret, read once per process: each read is a `security` run,
+    which was nearly all of an ask's own cost. `forget()` after storing a new one."""
+    try:
+        out = subprocess.run(["security", "find-generic-password", "-s", service, "-w"],
+                             capture_output=True, text=True, timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def forget() -> None:
+    keychain.cache_clear()
 
 
 def headers(cfg: dict) -> dict:
@@ -83,25 +110,30 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
     body = json.dumps({"state": state, **({"model": model} if model else {}), "questions": questions}).encode()
     req = urllib.request.Request(cfg["url"], data=body, headers=headers(cfg))
     for attempt in range(retries + 1):
+        last = attempt == retries
         try:
             # no redirect: a 3xx would carry the request, key included, somewhere not confirmed
             with web.open_url(req, timeout, follow=None) as r:
                 resp = json.loads(web.read(r, REPLY_CAP))
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < retries:
-                ra = e.headers.get("retry-after")
+            ra = e.headers.get("retry-after") if e.headers else None
+            if (e.code == 429 or 500 <= e.code < 600) and not last:
                 e.close()
-                try:
-                    delay = min(float(ra), RETRY_AFTER_CAP) if ra else 1.5 * (attempt + 1)
-                except ValueError:  # an HTTP-date Retry-After is legal; back off on the schedule instead
-                    delay = 1.5 * (attempt + 1)
-                time.sleep(delay)
+                time.sleep(backoff(attempt, ra))
                 continue
             detail = guard.relay(e.read(4096).decode(errors="ignore"), 300)
             e.close()
-            raise errors.AugurUnavailable(f"HTTP {e.code}{' (rate limited, retries exhausted)' if e.code == 429 else ''}: {detail}") from e
-        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
-            # ValueError covers a non-JSON or oversized body; HTTPException a connection cut mid-reply
+            raise errors.AugurUnavailable(f"HTTP {e.code}{' (retries exhausted)' if e.code == 429 or e.code >= 500 else ''}: "
+                                          f"{detail}") from e
+        except (http.client.HTTPException, ConnectionError) as e:
+            # cut mid-reply or reset: asked again, as a 5xx is; a timeout is not, since the
+            # server may still be answering (and billing) the first one
+            if not last:
+                time.sleep(backoff(attempt, None))
+                continue
+            raise errors.AugurUnavailable(f"network: {guard.relay(e, 300)} (retries exhausted)") from e
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            # ValueError covers a non-JSON or oversized body
             raise errors.AugurUnavailable(f"network or body: {guard.relay(e, 300)}") from e
         return common.reply(resp, model or "?")
     raise errors.AugurUnavailable("unreachable: retry loop exhausted without a response")
@@ -268,6 +300,7 @@ TYPE = common.BackendType(
         "key_host": {"type": "string", "description": "host:port the key may be sent to, written by "
                      "`augur configure backend` when a person confirms it; any other host gets no key."},
         "models": common.MODELS,
+        "workers": common.WORKERS,
         "timeout": common.TIMEOUT,
         "price_per_mtok": common.PRICE}},
     ask=ask, describe=describe, flags=("url", "model", "keychain_service", "env_key"),
