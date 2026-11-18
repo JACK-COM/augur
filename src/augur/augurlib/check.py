@@ -128,6 +128,7 @@ def _live_check(backend):
                 if got is None or (got >= t) != want:
                     wrong.append(f"  {it['id']}.{q}: expected {'at or above' if want else 'below'} {t}, got {got}")
         n = sum(len(it["labels"]) for it in spec["items"])
+        assert r is not None                      # the loop above ran: a live check has items
         print(f"{'ok' if not wrong else 'wrong'}: {n - len(wrong)} of {n} answers right at {t}  backend {r['backend']}  "
               f"model {r['model']}  tokens {tokens}  ({path})")
         for w in wrong:

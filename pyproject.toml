@@ -23,3 +23,23 @@ version = {attr = "augur.augur.__version__"}
 
 [tool.setuptools.package-data]
 augur = ["INSTALL-augur.md", "defaults.json"]
+
+[tool.mypy]
+# `make typecheck`. augur.py puts its own directory on the path, so src/augur is the import
+# root; the underscore modules are panoply-lib copies, checked in panoply-lib.
+python_version = "3.9"
+files = ["src/augur"]
+exclude = ['^src/augur/_[a-z]', '^src/augur/augur_laya\.py$']
+mypy_path = "src/augur"
+explicit_package_bases = true
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["_guard", "_web", "_manifest_schema", "_scorer_contract"]
+follow_imports = "skip"
+
+# Modules whose every function is annotated; a module joins once it is.
+[[tool.mypy.overrides]]
+module = ["augurlib.paths", "augurlib.backends.*", "augurlib.commands.*", "augurlib.cli"]
+disallow_untyped_defs = true

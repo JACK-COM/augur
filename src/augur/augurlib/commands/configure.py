@@ -19,8 +19,9 @@ def args(f: argparse.ArgumentParser) -> None:
     fb.add_argument("--type", choices=sorted(backends.TYPES), help="the protocol it speaks")
     for key in backends.entry_flags()[1:]:
         spec = btype.FLAGS[key]
-        fb.add_argument(spec.get("flag", "--" + key.replace("_", "-")), dest=key, type=spec.get("type"),
-                        metavar=spec.get("metavar"), help=backends.flag_help(key))
+        convert = {"type": spec["type"]} if "type" in spec else {}
+        fb.add_argument(spec.get("flag", "--" + key.replace("_", "-")), dest=key, metavar=spec.get("metavar"),
+                        help=backends.flag_help(key), **convert)
     fb.add_argument("--default", action="store_true", help="make it the default backend")
     fb.add_argument("--store-key", action="store_true", help="prompt for its key through macOS `security`")
     fb.add_argument("--force", action="store_true", help="save it even when it does not answer")

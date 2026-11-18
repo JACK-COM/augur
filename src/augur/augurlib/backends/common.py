@@ -92,7 +92,7 @@ def reply(resp: Any, model: str, keep: bool = False) -> dict:
     through (laya's device and context). Any other shape is unavailable."""
     if not isinstance(resp, dict) or not isinstance(resp.get("answers"), dict):
         raise errors.AugurUnavailable(f"unexpected response shape: {str(resp)[:200]}")
-    usage = resp.get("usage") if isinstance(resp.get("usage"), dict) else {}
+    usage: dict = resp["usage"] if isinstance(resp.get("usage"), dict) else {}
     out = dict(resp) if keep else {"answers": resp["answers"]}
     out["model"] = str(resp.get("model") or model)
     try:

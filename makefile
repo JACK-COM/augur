@@ -1,5 +1,8 @@
-.PHONY: help test version version-patch version-minor version-major _bump-version
+.PHONY: help test typecheck version version-patch version-minor version-major _bump-version
 .SILENT:
+
+# Pinned, so a mypy release never fails a commit the code did not change.
+MYPY = uvx --quiet --from mypy==1.18.2 mypy
 
 help: ## | List all available commands
 	echo "Available commands in this makefile"
@@ -7,10 +10,14 @@ help: ## | List all available commands
 	| sed -n 's/^\(.*\): \(.*\)##\(.*\)/\1\3/p' \
 	| column -t -s '|'
 
-test: ## | Check the panoply-lib copies, then run tests/ and the install smoke check
+test: ## | Check the panoply-lib copies and the types, then run tests/ and the install smoke check
 	../panoply-lib/sync.sh --check augur
+	$(MYPY)
 	python3 -m unittest discover -s tests -t .
 	python3 src/augur/augur.py selftest
+
+typecheck: ## | Type-check src/augur as Python 3.9 reads it ([tool.mypy] in pyproject.toml)
+	$(MYPY)
 
 version-patch: ## | Release the next PATCH version: stamp, test, tag, push, move the formula
 	@$(MAKE) _bump-version BUMP=patch

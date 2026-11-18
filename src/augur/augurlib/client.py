@@ -27,8 +27,9 @@ def available(backend=None):
 
 def _probe(name, cfg, t, caller="check", timeout=60):
     """`available` for a resolved entry, saved or not. -> (ok, reason)"""
-    if backends.TYPES[t].available:
-        return backends.TYPES[t].available(cfg)
+    check = backends.TYPES[t].available
+    if check:
+        return check(cfg)
     try:          # a backend that starts is not yet one that answers
         r = _answer(name, cfg, t, {"text": "banana", "uid": uuid.uuid4().hex},
                     {"fruit": qtypes.noul("Is the word in `text` the name of a fruit?")}, None, timeout, 0, caller)
@@ -87,7 +88,7 @@ def batch(items, make_questions, *, threshold=None, backend=None, model=None, ca
             qs[k] = q
             key_of[k] = (id_, qn)
     resp = ask({"items": dict(items)}, qs, backend=backend, model=model, caller=caller, **kw)
-    out = {id_: {} for id_ in items}
+    out: dict = {id_: {} for id_ in items}
     for k, ans in resp["answers"].items():
         if k not in key_of:
             raise errors.AugurUnavailable(f"unexpected answer key {k!r}")

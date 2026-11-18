@@ -33,7 +33,7 @@ def calibrate(spec, *, backend=None, runs=1, limit=None, questions=None, workers
     items = spec["items"][:limit] if limit else spec["items"]
     workers = backends.TYPES[t].workers or workers
     t0 = time.time()
-    scores = {it["id"]: {q: [] for q in qs} for it in items}
+    scores: dict = {it["id"]: {q: [] for q in qs} for it in items}
     tokens = []
     failed = []
 
@@ -63,13 +63,13 @@ def calibrate(spec, *, backend=None, runs=1, limit=None, questions=None, workers
     classes = sorted({it.get("class", "?") for it in items})
     for q in qs:
         log(f"\n[{q}]")
-        pos = [means[it["id"]][q] for it in items if it["labels"].get(q) is True and means[it["id"]][q] is not None]
-        neg = [means[it["id"]][q] for it in items if it["labels"].get(q) is False and means[it["id"]][q] is not None]
+        pos: list = [means[it["id"]][q] for it in items if it["labels"].get(q) is True and means[it["id"]][q] is not None]
+        neg: list = [means[it["id"]][q] for it in items if it["labels"].get(q) is False and means[it["id"]][q] is not None]
         if pos and neg:
             log(f"  AUROC {_auroc(pos, neg):.3f}   positives n={len(pos)} min {min(pos):.2f} mean {st.mean(pos):.2f}"
                 f"   negatives n={len(neg)} max {max(neg):.2f} mean {st.mean(neg):.2f}")
         for c in classes:
-            v = [means[it["id"]][q] for it in items if it.get("class") == c and means[it["id"]][q] is not None]
+            v: list = [means[it["id"]][q] for it in items if it.get("class") == c and means[it["id"]][q] is not None]
             if v:
                 v.sort()
                 log(f"  {c:10s} n={len(v):3d}  mean {st.mean(v):.2f}  min {v[0]:.2f}  med {v[len(v) // 2]:.2f}  max {v[-1]:.2f}")

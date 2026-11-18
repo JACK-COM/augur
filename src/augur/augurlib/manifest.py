@@ -49,12 +49,9 @@ MANIFEST_SCHEMA = {
 
 
 def _schema_lib():
-    """The shared checker: a sibling module under Homebrew or a checkout, a package
-    member under pip or uv."""
-    try:
-        from . import _manifest_schema
-    except ImportError:
-        import _manifest_schema
+    """The shared checker, panoply-lib's copy beside augur.py, which puts its directory on
+    the path however Augur is installed."""
+    import _manifest_schema
     return _manifest_schema
 
 
