@@ -2,7 +2,9 @@
 checks an entry's values pass, and the one reading of a backend's reply.
 """
 import argparse
+import json
 import math
+import os
 import re
 import urllib.parse
 
@@ -52,6 +54,9 @@ class BackendType(NamedTuple):
     # refused outright.
     gates: Callable[[dict, dict], List[str]] = lambda new, old: []
     own_model: Callable[[dict], Optional[str]] = lambda cfg: cfg.get("model")
+    away: Callable[[dict], bool] = lambda cfg: False         # sends each text off this machine
+    any_model: Callable[[dict], bool] = lambda cfg: False    # a request may name any model
+    pool: Callable[[dict], int] = lambda cfg: 6              # parallel calls when none is asked for
 
 
 # How each settable key reads on the command line: (flag, metavar, help), where the flag
@@ -106,11 +111,68 @@ def check_url(url: str) -> None:
     """A key belongs in the keychain or the environment, where Augur never prints it; a URL is
     printed by --list, so one carrying a password or a query string is refused."""
     u = urllib.parse.urlparse(url)
+    if any(guard.INVISIBLE.__contains__(__import__("unicodedata").category(ch)) or ch.isspace() for ch in url):
+        raise ValueError("--url carries a space, control or invisible character")
     if u.scheme not in ("http", "https") or not u.hostname:
         raise ValueError(f"--url {url!r} is not an http(s) address")
     if u.username or u.password or u.query:
         raise ValueError("--url may not carry a username, password or query string; give the key with "
                          "--key-service or --key-env, and Augur sends it as a header")
+
+
+def run_capped(argv: list, stdin: str, timeout: float, cap: int) -> Tuple[int, str, str]:
+    """Run `argv` with `stdin`, its stdout cut at `cap` bytes (past it: ValueError, the
+    process killed), within `timeout` (past it: subprocess.TimeoutExpired, killed).
+    -> (exit code, stdout, the last 4 KB of stderr)."""
+    import selectors
+    import subprocess
+    import time
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert p.stdin is not None and p.stdout is not None and p.stderr is not None
+    try:
+        try:
+            p.stdin.write(stdin.encode("utf-8", "surrogatepass"))
+            p.stdin.close()
+        except BrokenPipeError:
+            pass                              # it stopped reading; its exit code says why
+        out, err, end = bytearray(), bytearray(), time.monotonic() + timeout
+        sel = selectors.DefaultSelector()
+        sel.register(p.stdout, selectors.EVENT_READ, out)
+        sel.register(p.stderr, selectors.EVENT_READ, err)
+        while sel.get_map():
+            left = end - time.monotonic()
+            if left <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            for key, _ in sel.select(left):
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    sel.unregister(key.fileobj)
+                    continue
+                key.data.extend(chunk)
+                if key.data is err:
+                    del err[:-4096]
+            if len(out) > cap:
+                raise ValueError(f"printed more than {cap >> 20} MB")
+        code = p.wait(max(0.0, end - time.monotonic()))
+        return code, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+
+
+def parse(raw: Any) -> Any:
+    """JSON from a backend, or unavailable: a body too deep to parse is a body that does not
+    parse, never a RecursionError past the unavailable contract."""
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError, TypeError) as e:
+        raise errors.AugurUnavailable(f"a reply that is not JSON: {guard.relay(str(raw)[:200], 220)}") from e
+
+
+def count(v: Any) -> int:
+    """A token count a backend reported: a whole number from zero to a trillion, else 0."""
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and 0 <= v <= 1e12 else 0
 
 
 def reply(resp: Any, model: str, keep: bool = False) -> dict:
@@ -122,8 +184,5 @@ def reply(resp: Any, model: str, keep: bool = False) -> dict:
     usage: dict = resp["usage"] if isinstance(resp.get("usage"), dict) else {}
     out = dict(resp) if keep else {"model": None, "answers": resp["answers"]}
     out["model"] = guard.relay(resp.get("model") or model, 200)   # printed by check and logged
-    try:
-        out["usage"] = {"input_tokens": int(usage.get("input_tokens") or 0)}
-    except (TypeError, ValueError):
-        out["usage"] = {"input_tokens": 0}
+    out["usage"] = {"input_tokens": count(usage.get("input_tokens"))}
     return out

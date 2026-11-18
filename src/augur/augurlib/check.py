@@ -5,11 +5,14 @@ import json
 import sys
 from pathlib import Path
 
+import _guard as guard
+
 from . import client
 from . import errors
 from . import fsio
 from . import paths
 from . import qtypes
+from . import request
 
 
 
@@ -60,7 +63,7 @@ def _load_check():
     path = paths.check_file()
     if not path.exists():
         return None
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = request.load(str(path), str(path))
     return _check_spec(raw, raw.get("threshold", 0.5) if isinstance(raw, dict) else 0.5)
 
 
@@ -90,7 +93,7 @@ def _configure_check(file, threshold, reset):
               else "live check: the two built-in questions (fruit, fish)")
         return 0
     try:
-        spec = _check_spec(json.loads(Path(file).read_text(encoding="utf-8")), 0.5 if threshold is None else threshold)
+        spec = _check_spec(request.load(file, file), 0.5 if threshold is None else threshold)
     except (OSError, ValueError) as e:
         print(f"{file}: {e}", file=sys.stderr)
         return 2
@@ -129,7 +132,7 @@ def _live_check(backend):
         n = sum(len(it["labels"]) for it in spec["items"])
         assert r is not None                      # the loop above ran: a live check has items
         print(f"{'ok' if not wrong else 'wrong'}: {n - len(wrong)} of {n} answers right at {t}  backend {r['backend']}  "
-              f"model {r['model']}  tokens {tokens}  ({path})")
+              f"model {guard.relay(r['model'], 80)}  tokens {tokens}  ({path})")
         for w in wrong:
             print(w)
         return 0 if not wrong else 1
@@ -141,7 +144,8 @@ def _live_check(backend):
         print(f"unavailable: {e}", file=sys.stderr)
         return 3
     a = r["answers"]
-    ok = a["fruit"]["noul"] > 0.8 and a["fish"]["noul"] < 0.2
+    fruit, fish = (a.get("fruit") or {}).get("noul"), (a.get("fish") or {}).get("noul")
+    ok = isinstance(fruit, float) and isinstance(fish, float) and fruit > 0.8 and fish < 0.2
     print(f"{'ok' if ok else 'wrong'}: backend {r['backend']}  model {r['model']}  fruit {a['fruit']['noul']}  "
           f"fish {a['fish']['noul']}  tokens {r['usage']['input_tokens']}")
     return 0 if ok else 1

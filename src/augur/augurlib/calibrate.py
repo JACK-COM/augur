@@ -16,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import _guard as guard
+
 from . import backends
 from . import client
 from . import errors
@@ -39,6 +41,30 @@ def _auroc(pos: List[float], neg: List[float]) -> float:
     return (rank_sum - n1 * (n1 + 1) / 2) / (n1 * n0)
 
 
+def check_spec(spec: Any) -> dict:
+    """An items file Augur can run, or ValueError naming the first fault, before a call is paid for."""
+    if not isinstance(spec, dict):
+        raise ValueError("an items file is a JSON object with `questions` and `items`")
+    from . import request
+    request.questions_ok(spec.get("questions"))
+    items = spec.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValueError("`items` must be a non-empty list")
+    for i, it in enumerate(items):
+        if not (isinstance(it, dict) and isinstance(it.get("id"), (str, int)) and "text" in it
+                and isinstance(it.get("labels", {}), dict)):
+            raise ValueError(f"item {i}: each item needs an `id`, a `text` and an object of `labels`")
+    return spec
+
+
+def fingerprint(it: dict, qs: dict) -> str:
+    """What a journal row answered: the item's text and the questions asked, so a resume over
+    an edited file or another --questions asks again instead of reusing a stale answer."""
+    import hashlib
+    return hashlib.sha256(json.dumps([it.get("text"), it.get("subject"), it.get("siblings"), qs],
+                                     sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
 def headline(answer: dict) -> Optional[float]:
     """The one number an answer gives a threshold: a noul's probability, else a score's
     position, else a choice's confidence."""
@@ -53,13 +79,12 @@ def lengths(items: List[dict]) -> Dict[str, int]:
     return {"p10": n[len(n) // 10], "median": n[len(n) // 2], "p90": n[min(len(n) - 1, len(n) * 9 // 10)]} if n else {}
 
 
-def workers_for(name: str, cfg: dict, t: str, asked: Optional[int]) -> int:
+def workers_for(cfg: dict, t: str, asked: Optional[int]) -> int:
     """Parallel calls: the type's ceiling first (one laya worker, one device), then what the
-    caller asked, then the entry's `workers`, then one for a server on this machine (which
-    queues, so more only add wait inside each call's timeout) and six for a hosted one."""
-    import _guard as guard
+    caller asked, then the entry's `workers`, then the type's own pool (one for a server on
+    this machine, which queues, so more only add wait inside each call's timeout)."""
     ceiling = backends.TYPES[t].workers
-    n = asked or cfg.get("workers") or (1 if guard.is_loopback(cfg.get("url") or "http://localhost") else 6)
+    n = asked or cfg.get("workers") or backends.TYPES[t].pool(cfg)
     return min(n, ceiling) if ceiling else n
 
 
@@ -70,13 +95,18 @@ def measure(spec: dict, name: str, qs: dict, items: List[dict], runs: int, worke
     tokens: List[int] = []
     done: Dict[str, int] = {}
     lock = threading.Lock()
+    prints = {it["id"]: fingerprint(it, qs) for it in items}
     if journal and resume and journal.exists():
-        for line in journal.read_text(encoding="utf-8").splitlines():
+        text = journal.read_text(encoding="utf-8")
+        if text and not text.endswith("\n"):
+            with open(journal, "a", encoding="utf-8") as f:
+                f.write("\n")                # the interrupted row's tail, so the next row starts clean
+        for line in text.splitlines():
             try:
                 row = json.loads(line)
             except ValueError:
                 continue                      # a line cut short by the interruption
-            if row.get("id") in scores:
+            if isinstance(row, dict) and row.get("id") in scores and row.get("fp") == prints[row["id"]]:
                 done[row["id"]] = done.get(row["id"], 0) + 1
                 tokens.append(int(row.get("tokens") or 0))
                 for q, v in (row.get("values") or {}).items():
@@ -98,15 +128,20 @@ def measure(spec: dict, name: str, qs: dict, items: List[dict], runs: int, worke
                 if v is not None:
                     scores[it["id"]][q].append(v)
             if out:
-                out.write(json.dumps({"id": it["id"], "values": values, "tokens": r["usage"]["input_tokens"]}) + "\n")
+                out.write(json.dumps({"id": it["id"], "fp": prints[it["id"]], "values": values,
+                                      "tokens": r["usage"]["input_tokens"]}) + "\n")
                 out.flush()
         return None
 
+    ex = ThreadPoolExecutor(max_workers=workers)
     try:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            failed_items = [it for it, e in zip(todo, ex.map(one, todo)) if e]
-            failures = [e for e in ex.map(one, failed_items) if e]       # each failure asked once more
+        failed_items = [it for it, e in zip(todo, ex.map(one, todo)) if e]
+        failures = [e for e in ex.map(one, failed_items) if e]           # each failure asked once more
+    except KeyboardInterrupt:
+        ex.shutdown(wait=True, cancel_futures=True)  # stop paying: the queued calls never start
+        raise
     finally:
+        ex.shutdown(wait=True)
         if out:
             out.close()
     return scores, tokens, failures
@@ -114,13 +149,13 @@ def measure(spec: dict, name: str, qs: dict, items: List[dict], runs: int, worke
 
 def report(spec: dict, name: str, cfg: dict, qs: dict, items: List[dict], runs: int, scores: dict,
            tokens: List[int], failures: List[str], elapsed: float, compare: Optional[str],
-           log: Callable[[str], Any]) -> dict:
+           log: Callable[[str], Any], previous: Optional[dict] = None) -> dict:
     means = {id_: {q: (st.mean(v) if v else None) for q, v in d.items()} for id_, d in scores.items()}
-    log(f"{spec.get('name', 'calibration')} on backend {name}: {len(items)} items x {runs} run(s), "
+    log(f"{guard.relay(spec.get('name', 'calibration'), 80)} on backend {name}: {len(items)} items x {runs} run(s), "
         f"{len(qs)} question(s), {sum(tokens):,} input tokens, ${sum(tokens) * float(cfg.get('price_per_mtok') or 0) / 1e6:.4f}, "
         f"{elapsed:.0f}s{', ' + str(len(failures)) + ' errors' if failures else ''}")
     for e in failures[:5]:
-        log("  error " + e)
+        log("  error " + guard.relay(e, 300))
     if failures:
         log(f"  {len(failures)} item(s) unanswered after a second try; the figures below leave them out")
     shape = lengths(items)
@@ -128,7 +163,7 @@ def report(spec: dict, name: str, cfg: dict, qs: dict, items: List[dict], runs: 
         log(f"  texts: median {shape['median']} chars, p10 {shape['p10']}, p90 {shape['p90']}; "
             f"a threshold measured here may not hold for texts far outside that range")
     classes = sorted({it.get("class", "?") for it in items})
-    prev = json.loads(Path(compare).read_text(encoding="utf-8")) if compare else None
+    prev = previous if isinstance(previous, dict) else None
     for q in qs:
         log(f"\n[{q}]")
         pos: list = [means[it["id"]][q] for it in items if it["labels"].get(q) is True and means[it["id"]][q] is not None]
@@ -140,7 +175,7 @@ def report(spec: dict, name: str, cfg: dict, qs: dict, items: List[dict], runs: 
             v: list = [means[it["id"]][q] for it in items if it.get("class") == c and means[it["id"]][q] is not None]
             if v:
                 v.sort()
-                log(f"  {c:10s} n={len(v):3d}  mean {st.mean(v):.2f}  min {v[0]:.2f}  med {v[len(v) // 2]:.2f}  max {v[-1]:.2f}")
+                log(f"  {guard.relay(c, 10):10s} n={len(v):3d}  mean {st.mean(v):.2f}  min {v[0]:.2f}  med {v[len(v) // 2]:.2f}  max {v[-1]:.2f}")
         if runs > 1:
             sds = [st.pstdev(scores[it["id"]][q]) for it in items if len(scores[it["id"]][q]) > 1]
             if sds:
@@ -156,8 +191,12 @@ def report(spec: dict, name: str, cfg: dict, qs: dict, items: List[dict], runs: 
 def calibrate(spec: dict, *, backend: Optional[str] = None, runs: int = 1, limit: Optional[int] = None,
               questions: Optional[List[str]] = None, workers: Optional[int] = None, out_dir: Optional[str] = None,
               compare: Optional[str] = None, resume: bool = False, caller: str = "calibrate",
-              log: Callable[[str], Any] = print) -> dict:
+              log: Callable[[str], Any] = print, previous: Optional[dict] = None) -> dict:
     """Ask every item in isolation, `runs` times, and report per question. Returns the per-item means."""
+    check_spec(spec)
+    if compare and previous is None:
+        from . import request
+        previous = request.load(compare, "--compare")
     name, cfg, t = manifest._backend(backend)
     qs = {k: v for k, v in spec["questions"].items() if not questions or k in questions}
     unknown = sorted(set(questions or []) - set(spec["questions"]))
@@ -171,9 +210,10 @@ def calibrate(spec: dict, *, backend: Optional[str] = None, runs: int = 1, limit
         if journal.exists() and not resume:
             journal.unlink()                  # a fresh run starts a fresh journal; --resume keeps it
     t0 = time.time()
-    scores, tokens, failures = measure(spec, name, qs, items, runs, workers_for(name, cfg, t, workers), caller,
+    scores, tokens, failures = measure(spec, name, qs, items, runs, workers_for(cfg, t, workers), caller,
                                        journal, resume)
-    means = report(spec, name, cfg, qs, items, runs, scores, tokens, failures, time.time() - t0, compare, log)
+    means = report(spec, name, cfg, qs, items, runs, scores, tokens, failures, time.time() - t0, compare, log,
+                   previous)
     if out_dir:
         with open(Path(out_dir) / f"means-{name}.json", "w", encoding="utf-8") as f:
             json.dump(means, f, indent=1)

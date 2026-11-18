@@ -1,4 +1,4 @@
-# GENERATED from panoply-lib/guard.py (uncommitted) by sync.sh: edit the source and rerun sync.sh, never this copy.
+# GENERATED from panoply-lib/guard.py (b4a5413) by sync.sh: edit the source and rerun sync.sh, never this copy.
 """guard: the checks every Panoply piece makes before text reaches a terminal or a setting
 turns a passive file active.
 

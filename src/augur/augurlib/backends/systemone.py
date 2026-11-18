@@ -1,14 +1,15 @@
 """The systemone backend: TypeSafe's System One API over HTTP, which Jev's host and Ollama
 0.35+ (at /v1/systemone) both serve, so any such model is a `url` and a `model`.
 """
-import functools
 import http.client
 import json
+import math
 import os
 import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -48,17 +49,32 @@ def backoff(attempt: int, retry_after: Optional[str]) -> float:
     second with jitter, so parallel callers that failed together do not retry together."""
     import random
     try:
-        if retry_after:
-            return min(float(retry_after), RETRY_AFTER_CAP)
+        asked = float(retry_after) if retry_after else None
     except ValueError:                        # an HTTP-date Retry-After is legal; back off on the schedule
-        pass
+        asked = None
+    if asked is not None and math.isfinite(asked) and asked >= 0:
+        return min(asked, RETRY_AFTER_CAP)
     return min(RETRY_AFTER_CAP, 2.0 ** attempt) * random.uniform(0.5, 1.0)
 
 
-@functools.lru_cache(maxsize=None)
+_KEYS: dict = {}
+_KEYS_LOCK = threading.Lock()
+
+
 def keychain(service: str) -> Optional[str]:
     """The keychain item's secret, read once per process: each read is a `security` run,
-    which was nearly all of an ask's own cost. `forget()` after storing a new one."""
+    which was nearly all of an ask's own cost. One reader at a time, so a pool of workers
+    raises one keychain prompt, not one each; only a found key is kept, so a locked keychain
+    is asked again. `forget()` after storing a new one."""
+    with _KEYS_LOCK:
+        if service not in _KEYS:
+            found = _read_keychain(service)
+            if found:
+                _KEYS[service] = found
+        return _KEYS.get(service)
+
+
+def _read_keychain(service: str) -> Optional[str]:
     try:
         out = subprocess.run(["security", "find-generic-password", "-s", service, "-w"],
                              capture_output=True, text=True, timeout=10)
@@ -70,7 +86,8 @@ def keychain(service: str) -> Optional[str]:
 
 
 def forget() -> None:
-    keychain.cache_clear()
+    with _KEYS_LOCK:
+        _KEYS.clear()
 
 
 def headers(cfg: dict) -> dict:
@@ -96,7 +113,8 @@ def gates(new: dict, old: dict) -> List[str]:
             raise ValueError(f"--url {url}: a backend off this machine is reached over https")
         if url != old.get("url"):
             out.append(f"send every text Augur asks it to {common.host(url)}")
-    moved = any(new.get(k) != old.get(k) for k in ("url", "keychain_service", "env_key"))
+    moved = (any(new.get(k) != old.get(k) for k in ("url", "keychain_service", "env_key"))
+             or new.get("key_host") != common.host(url))   # a key never confirmed for this host
     if keyed and moved:
         where = " and ".join(([f"keychain service {new['keychain_service']}"] if new.get("keychain_service") else [])
                              + ([f"environment variable {new['env_key']}"] if new.get("env_key") else []))
@@ -113,8 +131,11 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
         last = attempt == retries
         try:
             # no redirect: a 3xx would carry the request, key included, somewhere not confirmed
-            with web.open_url(req, timeout, follow=None) as r:
-                resp = json.loads(web.read(r, REPLY_CAP))
+            # one deadline over connect and every read: a socket timeout alone counts per read,
+            # which a server dripping a byte at a time holds open as long as it likes
+            limit = web.Deadline(timeout)
+            with web.open_url(req, timeout, deadline=limit, follow=None) as r:
+                resp = common.parse(web.read(r, REPLY_CAP, limit))
         except urllib.error.HTTPError as e:
             ra = e.headers.get("retry-after") if e.headers else None
             if (e.code == 429 or 500 <= e.code < 600) and not last:
@@ -132,8 +153,8 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
                 time.sleep(backoff(attempt, None))
                 continue
             raise errors.AugurUnavailable(f"network: {guard.relay(e, 300)} (retries exhausted)") from e
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            # ValueError covers a non-JSON or oversized body
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
+            # ValueError covers a non-JSON or oversized body, TimeoutError the deadline
             raise errors.AugurUnavailable(f"network or body: {guard.relay(e, 300)}") from e
         return common.reply(resp, model or "?")
     raise errors.AugurUnavailable("unreachable: retry loop exhausted without a response")
@@ -180,12 +201,12 @@ def _ollama_pull(base: str, model: str) -> None:
                     continue
                 ev = json.loads(line)
                 if ev.get("error"):
-                    raise errors.AugurUnavailable(ev["error"])
+                    raise errors.AugurUnavailable(guard.relay(ev["error"], 300))
                 total, done = ev.get("total"), ev.get("completed")
                 msg = ev.get("status", "") + (f" {done * 100 // total}%" if total and done else "")
                 print("\r" + guard.relay(msg, 72).ljust(72), end="", flush=True)
     except urllib.error.HTTPError as e:
-        raise errors.AugurUnavailable(f"HTTP {e.code}: {e.read().decode(errors='ignore')[:300]}") from e
+        raise errors.AugurUnavailable(f"HTTP {e.code}: {guard.relay(e.read(4096).decode(errors='ignore'), 300)}") from e
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise errors.AugurUnavailable(f"pull: {e}") from e
     finally:
@@ -208,7 +229,7 @@ def _exact_tag(tag: str, models: list) -> str:
 def guided_ollama(ui: Any, shipped: Optional[dict]) -> Optional[Tuple[dict, str]]:
     base = _ollama_base()
     try:
-        v = str(_get_json(base + "/api/version")["version"])
+        v = guard.relay(_get_json(base + "/api/version")["version"], 40)
         models = _ollama_models(base)
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"Ollama is not answering at {base} ({e}). Start it (open the app, or run `ollama serve`) and "
@@ -225,7 +246,7 @@ def guided_ollama(ui: Any, shipped: Optional[dict]) -> Optional[Tuple[dict, str]
     if shown:
         others = len(models) - len(shown)
         i = ui.choose(f"Ollama {v} has these decision models{_others(others)}. "
-                      f"Which one?", [f"{m['name']}  ({(m.get('size') or 0) / 1e9:.1f} GB)" for m in shown]
+                      f"Which one?", [f"{guard.relay(m['name'], 80)}  ({(m.get('size') or 0) / 1e9:.1f} GB)" for m in shown]
                       + ["another, pulled by name"])
     if i == len(shown):
         tag = ui.prompt("Model to pull, by its tag on ollama.com/library (a sized tag pins the build)")
@@ -307,6 +328,10 @@ TYPE = common.BackendType(
     kinds=(common.Kind("Ollama, on this machine (no key, no bill)", guided_ollama, declined=3),
            common.Kind("a hosted System One API, with an API key", guided_hosted, hosted_key)),
     cold_start=lambda cfg: not (cfg.get("keychain_service") or cfg.get("env_key")),
+    away=lambda cfg: common.off_machine(cfg.get("url") or ""),
+    # a keyless server on this machine (Ollama) serves whatever models it has pulled
+    any_model=lambda cfg: not common.off_machine(cfg.get("url") or "") and not (cfg.get("keychain_service") or cfg.get("env_key")),
+    pool=lambda cfg: 6 if common.off_machine(cfg.get("url") or "") else 1,
     gates=gates,
     leftovers=leftovers,
 )

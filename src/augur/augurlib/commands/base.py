@@ -14,6 +14,17 @@ class Verb(NamedTuple):
     # subparsers in `args` and dispatches on them in `run`.
 
 
+def count(v: str) -> int:
+    """argparse type: a whole number from one up."""
+    try:
+        n = int(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{v!r} is not a whole number") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"{v!r} must be 1 or more")
+    return n
+
+
 def unavailable(e: object) -> int:
     """No answer from the backend: one line, exit 3, the caller's cue to fall back."""
     print(f"unavailable: {e}", file=sys.stderr)

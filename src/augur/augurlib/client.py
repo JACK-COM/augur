@@ -4,15 +4,17 @@ re-ask near the threshold, and probe whether a backend answers.
 import sys
 import uuid
 
+import _guard as guard
+
 from . import backends
 from . import errors
 from . import ledger
 from . import manifest
 from . import qtypes
+from . import request
 
 
 MAX_BATCH = 20
-MAX_QUESTIONS = 64
 
 
 REASK_BAND = 0.2
@@ -56,10 +58,10 @@ def ask(state, questions, *, subject=None, siblings=None, backend=None, model=No
         state["siblings"] = list(siblings)
     if uid:
         state["uid"] = uuid.uuid4().hex
-    if len(questions) > MAX_QUESTIONS:
-        raise ValueError(f"{len(questions)} questions in one call; at most {MAX_QUESTIONS}, each read against the whole text")
+    request.questions_ok(questions)
     name, cfg, t = manifest._backend(backend)
-    if model and model != backends.TYPES[t].own_model(cfg) and model not in (cfg.get("models") or []):
+    bt = backends.TYPES[t]
+    if model and not bt.any_model(cfg) and model != bt.own_model(cfg) and model not in (cfg.get("models") or []):
         # a request's `model` picks among what the entry allows, never any model or checkpoint:
         # a laya checkpoint is code it loads, and a lenient model is a screen turned off
         raise errors.AugurUnavailable(f"backend {name} does not allow model {model!r}; add it to the entry's "
@@ -75,7 +77,7 @@ def _answer(name, cfg, t, state, questions, model, timeout, retries, caller):
         raise errors.NoKey(f"{e}; `augur configure backend {name} --store-key` stores one") from None
     qtypes._check_answers(resp["answers"])
     if resp.get("truncated"):
-        print(f"augur: {name} cut the text to its context ({resp.get('max_len', '?')} tokens); "
+        print(f"augur: {name} cut the text to its context ({guard.relay(resp.get('max_len', '?'), 20)} tokens); "
               f"its answers cover the start only", file=sys.stderr)
     resp["backend"] = name
     ledger._log(name, caller, resp["model"], len(questions), resp["usage"]["input_tokens"], float(cfg.get("price_per_mtok") or 0))

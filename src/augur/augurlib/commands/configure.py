@@ -76,6 +76,9 @@ def backend(args: argparse.Namespace) -> int:
             if not ok:
                 return 3
         if args.default:
+            code = entries.default_refused(name, cfg, t)
+            if code:
+                return code
             with fsio._manifest_lock():
                 user = manifest._user_manifest()
                 entries._set_default(user, name)

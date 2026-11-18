@@ -3,8 +3,8 @@ import argparse
 import json
 
 from .. import calibrate as measure
-from .. import client, errors
-from .base import Verb, bad_input, unavailable
+from .. import client, errors, request
+from .base import Verb, bad_input, count, unavailable
 
 
 def args(c: argparse.ArgumentParser) -> None:
@@ -12,7 +12,7 @@ def args(c: argparse.ArgumentParser) -> None:
     c.add_argument("--runs", type=int, default=1, metavar="N", help="repeats per item (default 1)")
     c.add_argument("--limit", type=int, metavar="N", help="first N items only")
     c.add_argument("--questions", metavar="a,b", help="comma-separated subset of the file's questions")
-    c.add_argument("--workers", type=int, metavar="N",
+    c.add_argument("--workers", type=count, metavar="N",
                    help="parallel calls (default: the entry's `workers`, else 1 for a server on this machine, else 6)")
     c.add_argument("--out", metavar="DIR", help="directory for the answers as they land and the per-item means")
     c.add_argument("--resume", action="store_true", help="with --out, ask only what an interrupted run left unasked")
@@ -21,8 +21,10 @@ def args(c: argparse.ArgumentParser) -> None:
 
 def run(a: argparse.Namespace) -> int:
     try:
-        with open(a.items) as f:
-            spec = json.load(f)
+        spec = measure.check_spec(request.load(a.items, "the items file"))
+        prev = request.load(a.compare, "--compare") if a.compare else None
+        if a.resume and not a.out:
+            raise ValueError("--resume continues the run in --out DIR; name the directory")
     except (OSError, ValueError) as e:
         return bad_input(e)
     ok, reason = client.available(a.backend)
@@ -31,10 +33,10 @@ def run(a: argparse.Namespace) -> int:
     try:
         measure.calibrate(spec, backend=a.backend, runs=a.runs, limit=a.limit,
                           questions=[x.strip() for x in a.questions.split(",")] if a.questions else None,
-                          workers=a.workers, out_dir=a.out, compare=a.compare, resume=a.resume)
+                          workers=a.workers, out_dir=a.out, compare=a.compare, resume=a.resume, previous=prev)
     except errors.AugurUnavailable as e:
         return unavailable(e)
-    except ValueError as e:
+    except (ValueError, OSError) as e:
         return bad_input(e)
     return 0
 

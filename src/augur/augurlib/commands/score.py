@@ -9,12 +9,11 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from .. import calibrate, client, errors, manifest, request
-from .ask import REQUEST_CAP
-from .base import Verb, bad_input, unavailable
+from .base import Verb, bad_input, count, unavailable
 
 
 def args(s: argparse.ArgumentParser) -> None:
-    s.add_argument("--workers", type=int, metavar="N",
+    s.add_argument("--workers", type=count, metavar="N",
                    help="parallel calls (default: the entry's `workers`, else 1 for a server on this machine, else 6)")
     s.add_argument("--caller", help="the name the usage ledger books the cost under (default score)")
     s.add_argument("--against", metavar="FILE", help="a calibrate run's shape-<backend>.json: warn when these texts "
@@ -37,13 +36,20 @@ def drift(texts: List[Any], shape: dict) -> Optional[str]:
 def run(a: argparse.Namespace) -> int:
     try:
         reqs = []
-        for n, line in enumerate(sys.stdin, 1):
-            if not line.strip():
-                continue
-            if len(line) > REQUEST_CAP:
-                raise ValueError(f"line {n}: the request passes {REQUEST_CAP // (1 << 20)} MB")
-            reqs.append(request._request(json.loads(line)))
-        shape = json.loads(Path(a.against).read_text(encoding="utf-8")) if a.against else {}
+        n = 0
+        while True:
+            line = sys.stdin.readline(request.REQUEST_CAP + 1)
+            if not line:
+                break
+            n += 1
+            if line.strip():
+                try:
+                    reqs.append(request._request(request.load(line, f"line {n}", text=True)))
+                except ValueError as e:
+                    raise ValueError(f"line {n}: {e}") from None
+        shape = request.load(a.against, "--against") if a.against else {}
+        if not isinstance(shape, dict):
+            raise ValueError("--against is not a calibrate run's shape file")
         name, cfg, t = manifest._backend(a.backend)
     except errors.AugurUnavailable as e:
         return unavailable(e)
@@ -58,10 +64,10 @@ def run(a: argparse.Namespace) -> int:
         try:
             return client.ask(state, questions, subject=kw["subject"], siblings=kw["siblings"], backend=name,
                               model=kw["model"], caller=a.caller or kw["caller"] or "score")
-        except (errors.AugurUnavailable, ValueError) as e:
-            return {"error": str(e)}
+        except Exception as e:  # noqa: one failed request is one error line, never the whole batch
+            return {"error": str(e) if isinstance(e, (errors.AugurUnavailable, ValueError)) else f"{type(e).__name__}"}
 
-    with ThreadPoolExecutor(max_workers=calibrate.workers_for(name, cfg, t, a.workers)) as ex:
+    with ThreadPoolExecutor(max_workers=calibrate.workers_for(cfg, t, a.workers)) as ex:
         replies = list(ex.map(one, reqs))
     for r in replies:
         print(json.dumps(r))

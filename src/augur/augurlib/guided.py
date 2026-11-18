@@ -3,6 +3,8 @@ backend types declare (backends.kinds()), and each kind asks its own.
 """
 from types import SimpleNamespace
 
+import _guard as guard
+
 from . import backends
 from . import entries
 from . import manifest
@@ -54,7 +56,7 @@ def _guided_backend(name=None):
         if shipped and shipped.get("type") == settings["type"]:
             left = sorted(set(shipped) - set(settings) - {"type"})
             print(f"{name} is shipped; what you leave out keeps its shipped value ({', '.join(left)})")
-        if name in known and not _yes(f"{name} exists ({manifest._type(known[name])}, {backends.TYPES[manifest._type(known[name])].describe(known[name])}). "
+        if name in known and not _yes(f"{name} exists ({manifest._type(known[name])}, {guard.relay(backends.TYPES[manifest._type(known[name])].describe(known[name]), 160)}). "
                                       f"Replace it?"):
             print("augur.json unchanged")
             return 1

@@ -60,10 +60,10 @@ class Scale(AugurCase):
         self.assertTrue(all(m["fruit"] is not None for m in means.values()))
 
     def test_the_pool_fits_the_server(self):
-        self.assertEqual(workers_for("o", {"url": "http://localhost:11434/v1"}, "systemone", None), 1)
-        self.assertEqual(workers_for("h", {"url": "https://api.example/v1"}, "systemone", None), 6)
-        self.assertEqual(workers_for("h", {"url": "https://api.example/v1", "workers": 12}, "systemone", None), 12)
-        self.assertEqual(workers_for("l", {}, "laya", 8), 1)
+        self.assertEqual(workers_for({"url": "http://localhost:11434/v1"}, "systemone", None), 1)
+        self.assertEqual(workers_for({"url": "https://api.example/v1"}, "systemone", None), 6)
+        self.assertEqual(workers_for({"url": "https://api.example/v1", "workers": 12}, "systemone", None), 12)
+        self.assertEqual(workers_for({}, "laya", 8), 1)
 
     def test_score_answers_many_in_order(self):
         reqs = [{"questions": self.fruit, "text": t} for t in ("banana", "stone")] + \

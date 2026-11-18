@@ -14,6 +14,9 @@ from .. import errors
 from . import common
 
 
+OUTPUT_CAP = 1 << 20         # an answer to typed questions is small; more is not one
+
+
 def argv(cfg: dict) -> list:
     cmd = cfg["command"]
     try:
@@ -36,19 +39,17 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
     req = {"questions": questions, "state": state, **({"model": model} if model else {})}
     try:
         # errors="replace": a stray non-UTF-8 byte would otherwise raise past every except here
-        out = subprocess.run(run, input=json.dumps(req), capture_output=True, text=True,
-                             errors="replace", timeout=wait)
+        code, stdout, stderr = common.run_capped(run, json.dumps(req), wait, OUTPUT_CAP)
     except subprocess.TimeoutExpired:
-        raise errors.AugurUnavailable(f"command {run[0]} gave no answer in {wait}s")
+        raise errors.AugurUnavailable(f"command {guard.relay(run[0], 120)} gave no answer in {wait}s")
     except OSError as e:
-        raise errors.AugurUnavailable(f"command {run[0]}: {e}") from e
-    if out.returncode != 0:
-        why = guard.relay((out.stderr.strip().splitlines() or ["no message"])[-1], 200)
-        raise errors.AugurUnavailable(f"command {run[0]} exited {out.returncode}: {why}")
-    try:
-        resp = json.loads(out.stdout)
+        raise errors.AugurUnavailable(f"command {guard.relay(run[0], 120)}: {guard.relay(e, 200)}") from e
     except ValueError as e:
-        raise errors.AugurUnavailable(f"command {run[0]} printed something that is not JSON: {guard.relay(repr(out.stdout[:200]), 220)}") from e
+        raise errors.AugurUnavailable(f"command {guard.relay(run[0], 120)}: {e}") from e
+    if code != 0:
+        why = guard.relay((stderr.strip().splitlines() or ["no message"])[-1], 200)
+        raise errors.AugurUnavailable(f"command {guard.relay(run[0], 120)} exited {code}: {why}")
+    resp = common.parse(stdout)
     return common.reply(resp, model or Path(run[0]).name)
 
 

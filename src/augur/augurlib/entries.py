@@ -34,7 +34,7 @@ PROBE_TIMEOUT = 300             # the first call after Ollama loads a model can 
 def _list_backends():
     m, user, shipped = manifest._manifest(), manifest._user_manifest().get("backends") or {}, manifest._defaults()["backends"]
     rows = [(("*" if n == m["backend"] else " ") + " " + n, manifest._type(c) or "?", manifest._origin(n, user, shipped),
-             backends.TYPES[manifest._type(c)].describe(c)) for n, c in sorted(m["backends"].items())]
+             guard.relay(backends.TYPES[manifest._type(c)].describe(c), 160)) for n, c in sorted(m["backends"].items())]
     w = [max(len(r[i]) for r in rows) for i in range(3)]
     for r in rows:
         print(f"{r[0]:<{w[0]}}  {r[1]:<{w[1]}}  {r[2]:<{w[2]}}  {r[3]}")
@@ -79,6 +79,20 @@ def _remove_locked(name):
         said += f"; it was the default, which is {manifest._defaults()['backend']} again"
     print(f"{said} ({fsio._write_json(paths.home() / 'augur.json', user)})")
     return 0
+
+
+def default_refused(name, cfg, t):
+    """None when NAME may become the default; else the exit code, after saying why. A default
+    that sends text off this machine receives every later call that names no backend, so a
+    person chooses it at a terminal, as they confirmed the entry itself."""
+    if not backends.TYPES[t].away(cfg) or manifest._manifest()["backend"] == name:
+        return None
+    if guard.person_confirms(f"Make {name} the default? Every call that names no backend then sends its text to "
+                             f"{btype.host(cfg.get('url') or '')}.", [], "make it the default"):
+        return None
+    print(f"{name} is not the default: one that sends text off this machine is chosen by a person at a terminal. "
+          f"Run it yourself:\n  augur configure backend {shlex.quote(name)} --default", file=sys.stderr)
+    return 1
 
 
 def _set_default(user, name):
@@ -155,6 +169,10 @@ def _save_backend(name, given, *, replace=False, make_default=False, force=False
             print(f"{name} not saved; fix that and run this again, or add --force to save it unverified",
                   file=sys.stderr)
             return 3
+    if make_default:
+        code = default_refused(name, run, t)
+        if code:
+            return code
     current = manifest._manifest()["backend"]
     if not make_default and confirm and current != name:
         make_default = confirm(f"Make {name} the default backend? It is {current} now.")
@@ -181,4 +199,5 @@ def command_line(name, given, make_default=False):
     for key, value in given.items():
         flag = "--type" if key == "type" else btype.FLAGS[key].get("flag", "--" + key.replace("_", "-"))
         words += [flag, str(value) if not isinstance(value, list) else shlex.join(value)]
-    return shlex.join(words + (["--default"] if make_default else []))
+    # relayed: a person copies this line, and an escape or bidi character in it could hide what it runs
+    return guard.relay(shlex.join(words + (["--default"] if make_default else [])), 2000)
