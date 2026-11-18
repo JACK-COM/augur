@@ -1,4 +1,4 @@
-# GENERATED from panoply-lib/web.py (bfb4e78) by sync.sh: edit the source and rerun sync.sh, never this copy.
+# GENERATED from panoply-lib/web.py (bfb4e78+uncommitted) by sync.sh: edit the source and rerun sync.sh, never this copy.
 """web: the one HTTP client the Panoply's pieces use, bounded so a hostile or slow server
 cannot hold a piece, redirect it somewhere it was not sent, or walk it into this machine's
 own network.
@@ -114,6 +114,9 @@ class _Redirects(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         newurl = urllib.parse.urljoin(req.full_url, newurl)
+        if urlparse(newurl).scheme not in ("http", "https"):
+            # ftp: would go through urllib's own handler, past every guard on this client
+            raise Redirected(newurl, code, "not http or https")
         if self.follow not in ("same-origin", "any"):
             raise Redirected(newurl, code, "this request follows no redirect")
         if self.follow == "same-origin" and not same_site(req.full_url, newurl):
