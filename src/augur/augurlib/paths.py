@@ -30,5 +30,8 @@ def manifest() -> Path:
     return home() / "augur.json"
 
 
+CHECK_MAX = 10          # a live check is a health probe, one billed call per item, never a calibration
+
+
 def check_file() -> Path:
     return home() / "check.json"

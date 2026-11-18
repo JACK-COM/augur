@@ -1,5 +1,7 @@
 """Help text: the question-file format and each verb's examples.
 """
+from . import paths
+
 
 USAGE = """augur: typed questions to a decision model, calibrated probabilities back, no text.
 
@@ -96,7 +98,6 @@ change or a client change is shown not to have moved the instrument.
 
 
 
-from . import check
 
 
 QUESTION_FILE = """A question file is a JSON object of named, typed questions. `noul` is a
@@ -172,7 +173,7 @@ the prompt to macOS `security`, and elsewhere prints the variable to export.
 
 The file is copied to ~/.augur/check.json, so editing or deleting the original changes nothing.
 Every item is one billed call on each `augur check --live`.
-""" % check.CHECK_MAX,
+""" % paths.CHECK_MAX,
     "schema": """examples:
   augur schema                                 write ~/.augur/augur.schema.json and say how to use it
 """,

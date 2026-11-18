@@ -99,7 +99,7 @@ class Configure(AugurCase):
         code, out = run(["configure", "backend", "--list"])
         self.assertTrue(code == 2 and "`backends` must be an object" in out, f"--list over a null entry: {code} {out}")
         (Path(home) / "augur.json").write_text("{}")
-        code, out = run(["configure", "backend", "hk", "--type", "systemone", "--url", "http://h/v1/systemone",
+        code, out = run(["configure", "backend", "hk", "--type", "systemone", "--url", "https://h/v1/systemone",
                          "--key-env", "AUGUR_SELFTEST_ABSENT_KEY", "--store-key"])
         self.assertTrue(code == 3 and "export AUGUR_SELFTEST_ABSENT_KEY=<your key>" in out
                         and "`augur configure backend hk --store-key` stores one" in out, f"a missing key's remedy: {out}")

@@ -12,7 +12,6 @@ from . import paths
 from . import qtypes
 
 
-CHECK_MAX = 10          # a live check is a health probe, one billed call per item, never a calibration
 
 
 def _check_spec(spec, threshold=0.5):
@@ -23,8 +22,8 @@ def _check_spec(spec, threshold=0.5):
     qs, items = spec.get("questions"), spec.get("items")
     if not isinstance(qs, dict) or not qs or not all(isinstance(q, dict) for q in qs.values()):
         raise ValueError("`questions` must be a non-empty object of named questions (`augur ask -h` shows one)")
-    if not isinstance(items, list) or not 1 <= len(items) <= CHECK_MAX:
-        raise ValueError(f"`items` must list 1 to {CHECK_MAX} items; each is one billed call on every check")
+    if not isinstance(items, list) or not 1 <= len(items) <= paths.CHECK_MAX:
+        raise ValueError(f"`items` must list 1 to {paths.CHECK_MAX} items; each is one billed call on every check")
     if not (isinstance(threshold, (int, float)) and not isinstance(threshold, bool) and 0 < threshold < 1):
         raise ValueError("the threshold must lie strictly between 0 and 1")
     seen, kept = set(), []

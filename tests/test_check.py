@@ -9,7 +9,8 @@ from tests.harness import AugurCase
 
 from augurlib import paths  # noqa: E402
 from augur import choice, main  # noqa: E402
-from augurlib.check import CHECK_MAX, _check_spec  # noqa: E402
+from augurlib.check import _check_spec
+from augurlib.paths import CHECK_MAX  # noqa: E402
 
 
 class Check(AugurCase):

@@ -68,6 +68,12 @@ def available(cfg: dict) -> Tuple[bool, str]:
         return False, str(e)
 
 
+def gates(new: dict, old: dict) -> List[str]:
+    if not new.get("python") or new.get("python") == old.get("python"):
+        return []
+    return [f"run  {new['python']}  as laya's interpreter, each text Augur asks on its stdin"]
+
+
 def describe(cfg: dict) -> str:
     return f"{cfg.get('checkpoint')} via {cfg.get('python') or '(no interpreter named)'}"
 
@@ -101,8 +107,10 @@ TYPE = common.BackendType(
         "checkpoint": {"type": "string", "description": "Checkpoint to load; a fine-tune goes here."},
         "device": {"type": ["string", "null"], "description": "cuda, mps or cpu; null lets laya pick."},
         "head_max_len": {"type": "integer"},
+        "models": common.MODELS,
         "price_per_mtok": common.PRICE}},
     ask=ask, describe=describe, flags=("python", "checkpoint", "device"),
     kinds=(common.Kind("Laya, in a Python virtualenv", guided),),
-    available=available, workers=1, leftovers=leftovers,      # one worker process, one device
+    available=available, workers=1, leftovers=leftovers, gates=gates,   # one worker process, one device
+    own_model=lambda cfg: cfg.get("checkpoint"),
 )

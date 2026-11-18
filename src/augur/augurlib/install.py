@@ -69,13 +69,15 @@ def _uninstall(yes, dry):
         backends = manifest._manifest().get("backends") or {}
     except errors.AugurUnavailable:
         backends = {}
-    for line in sorted({ln for c in backends.values() if manifest._type(c) in types.TYPES
-                        for ln in types.TYPES[manifest._type(c)].leftovers(c)}):
-        print(line)
     if paths.home().is_dir():
-        print(f"  the home:     rm -r {paths.home()}   (augur.json, its schema and the usage ledger)")
+        print(f"  the home:     rm -r {shlex.quote(str(paths.home()))}   (augur.json, its schema and the usage ledger)")
+    for t in types.TYPES.values():
+        for line in sorted({ln for c in backends.values() if manifest._type(c) == t.name for ln in t.leftovers(c)}):
+            print(line)
     if paths.PACKAGED:
         print("  the command:  brew uninstall jack-com/panoply/augur   (or `uv tool uninstall augur`)")
     else:
-        print(f"  the files:    rm -r {shlex.quote(str(paths.HERE))}   (augur.py and everything beside it)")
+        files = ["augur.py", "augurlib", "augur_laya.py", "defaults.json", "INSTALL-augur.md",
+                 *sorted(p.name for p in paths.HERE.glob("_*.py"))]
+        print(f"  the files:    rm -r {' '.join(shlex.quote(str(paths.HERE / n)) for n in files)}")
     return 0

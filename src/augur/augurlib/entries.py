@@ -4,12 +4,15 @@ augur.json, each new entry asked one real question before it is saved.
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
+import _guard as guard
+
 from . import backends
 from . import client
-from .backends import common
+from .backends import common as btype
 from . import errors
 from . import fsio
 from . import keys
@@ -22,13 +25,7 @@ ENTRY_FLAGS = backends.entry_flags()
 
 
 NAME_CHARS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-
-
 NAME_RULE = "a name takes letters, digits, '.', '_' and '-', starting with a letter or digit"
-
-
-
-
 
 
 PROBE_TIMEOUT = 300             # the first call after Ollama loads a model can take minutes; never written
@@ -92,13 +89,14 @@ def _set_default(user, name):
 
 
 def _build_entry(name, given, replace=False):
-    """The entry augur.json would hold for NAME, and the merged entry Augur would run.
+    """The entry augur.json would hold for NAME, the merged entry Augur would run, its type,
+    and what saving it would switch on that a person must confirm (the type's `gates`).
     `given` merges over the user's present entry by the manifest's own rule, or replaces it
     when `replace`. Raises ValueError naming the first fault."""
     if not NAME_CHARS.fullmatch(name):
         raise ValueError(NAME_RULE)
     if "url" in given:
-        common.check_url(given["url"])
+        btype.check_url(given["url"])
     shipped = manifest._defaults()["backends"]
     have = (manifest._user_manifest().get("backends") or {}).get(name) or {}
     entry = dict(given) if replace else manifest._merged(have, given, shipped.get(name))
@@ -106,10 +104,12 @@ def _build_entry(name, given, replace=False):
     if found:
         raise ValueError("; ".join(f.split(": ", 1)[-1] for f in found))
     run = manifest._merged(shipped.get(name) or {}, entry)
+    before = manifest._merged(shipped.get(name) or {}, have) if (have or name in shipped) else {}
     try:
-        return entry, run, manifest._resolve(name, run)
+        t = manifest._resolve(name, run)
     except errors.AugurUnavailable as e:
         raise ValueError(str(e)) from None
+    return entry, run, t, backends.TYPES[t].gates(run, before)
 
 
 def _save_backend(name, given, *, replace=False, make_default=False, force=False, store_key=False, confirm=None):
@@ -117,10 +117,20 @@ def _save_backend(name, given, *, replace=False, make_default=False, force=False
     `force` (or, guided, the user) says to save it anyway. `confirm(prompt) -> bool` asks the
     user; None means a script is driving and the flags decide."""
     try:
-        entry, run, t = _build_entry(name, given, replace)
+        entry, run, t, gated = _build_entry(name, given, replace)
     except (ValueError, errors.AugurUnavailable) as e:
         print(f"{name}: {e}", file=sys.stderr)
         return 2
+    if gated:
+        # Nothing runs and nothing is sent before a person says so: the probe below would
+        # already run the command or send the key.
+        if not guard.person_confirms(f"Save backend {name}? Every call to it will then:", gated, "save it"):
+            print(f"{name} not saved: a backend that runs a program, sends text off this machine or sends a key "
+                  f"is set by a person at a terminal. Run it yourself:\n  {command_line(name, given, make_default)}",
+                  file=sys.stderr)
+            return 1
+        if run.get("keychain_service") or run.get("env_key"):
+            entry["key_host"] = run["key_host"] = btype.host(run.get("url") or "")
     if store_key:
         code = keys._store_key(name, run)
         if code:
@@ -148,7 +158,8 @@ def _save_backend(name, given, *, replace=False, make_default=False, force=False
     with fsio._manifest_lock():                  # read under the lock: another run may have written since
         user = manifest._user_manifest()
         if not replace:                     # merge over the entry as it is now, keeping a same-name run's keys
-            entry = manifest._merged(user["backends"].get(name) or {}, given, manifest._defaults()["backends"].get(name))
+            entry = {**manifest._merged(user["backends"].get(name) or {}, given, manifest._defaults()["backends"].get(name)),
+                     **({"key_host": entry["key_host"]} if "key_host" in entry else {})}
         user["backends"][name] = entry
         if make_default:
             _set_default(user, name)
@@ -158,3 +169,13 @@ def _save_backend(name, given, *, replace=False, make_default=False, force=False
     print(f"before a threshold means anything on it, measure it:  augur calibrate items.json --backend {name} "
           f"--out run-{name}/")
     return 0
+
+
+def command_line(name, given, make_default=False):
+    """The `augur configure backend` line that would save `given`, quoted for a shell, for a
+    person to run at a terminal."""
+    words = ["augur", "configure", "backend", name]
+    for key, value in given.items():
+        flag = "--type" if key == "type" else btype.FLAGS[key].get("flag", "--" + key.replace("_", "-"))
+        words += [flag, str(value) if not isinstance(value, list) else shlex.join(value)]
+    return shlex.join(words + (["--default"] if make_default else []))

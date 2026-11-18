@@ -6,7 +6,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from .. import errors
 from . import common
@@ -50,6 +50,12 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
     return common.reply(resp, model or Path(run[0]).name)
 
 
+def gates(new: dict, old: dict) -> List[str]:
+    if new.get("command") == old.get("command"):
+        return []
+    return [f"run  {describe(new)}  on every call, each text Augur asks on its stdin"]
+
+
 def describe(cfg: dict) -> str:
     c = cfg.get("command", "")
     return c if isinstance(c, str) else shlex.join(str(a) for a in c)
@@ -78,8 +84,9 @@ TYPE = common.BackendType(
                     "description": "The command: an argument list, or one string split as a shell would. "
                                    "It reads {questions, state, model?} on stdin and prints {answers, model?, usage?}."},
         "model": {"type": "string", "description": "Sent as `model` in every request; --model overrides it."},
+        "models": common.MODELS,
         "timeout": common.TIMEOUT,
         "price_per_mtok": common.PRICE}},
     ask=ask, describe=describe, flags=("command", "model"),
-    kinds=(common.Kind("a script of your own", guided),),
+    kinds=(common.Kind("a script of your own", guided),), gates=gates,
 )

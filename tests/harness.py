@@ -85,6 +85,16 @@ class AugurCase(unittest.TestCase):
         opener = mock.patch("urllib.request.urlopen", self.stub)
         opener.start()
         self.addCleanup(opener.stop)
+        # A person at a terminal says yes, so a case can save a backend that runs a command or
+        # sends a key; the gate itself is test_gates.py's, against the real check.
+        try:
+            import _guard
+        except ImportError:                       # a release before the gate
+            self.person = None
+        else:
+            self.person = mock.patch.object(_guard, "person_confirms", lambda *a, **k: True)
+            self.person.start()
+            self.addCleanup(self.person.stop)
         self.fruit = {"fruit": noul("Is the word in `text` the name of a fruit?")}
 
     def stand(self):

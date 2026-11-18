@@ -5,6 +5,8 @@ import argparse
 import math
 import re
 import urllib.parse
+
+import _guard as guard
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from .. import errors
@@ -13,6 +15,8 @@ VAR_CHARS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 PRICE = {"type": "number", "description": "USD per million input tokens, for the usage ledger."}
 TIMEOUT = {"type": "number", "description": "Seconds to wait for an answer (default 60)."}
 TYPE = {"type": "string", "description": "The protocol this backend speaks: systemone, laya or command."}
+MODELS = {"type": "array", "items": {"type": "string"},
+          "description": "Other models a request may name with `model`; the entry's own is always allowed."}
 
 
 class Kind(NamedTuple):
@@ -24,6 +28,7 @@ class Kind(NamedTuple):
     label: str
     run: Callable[[Any, Optional[dict]], Optional[Tuple[dict, str]]]
     named: Optional[Callable[[Any, str, dict], bool]] = None
+    declined: int = 2                     # the exit code when `run` returns None
 
 
 class BackendType(NamedTuple):
@@ -39,6 +44,12 @@ class BackendType(NamedTuple):
     workers: Optional[int] = None                   # calibrate's ceiling on parallel calls; None: the caller's
     cold_start: Callable[[dict], bool] = lambda cfg: False   # whether a first call may load a model for minutes
     leftovers: Callable[[dict], List[str]] = lambda cfg: []  # what `uninstall` leaves for the user to remove
+    # What saving `new` over `old` (the merged entry before, {} for a new one) would switch
+    # on that a person must confirm: running a program, sending text off this machine,
+    # sending a key. One line each; empty when nothing is. Raises ValueError for a setting
+    # refused outright.
+    gates: Callable[[dict, dict], List[str]] = lambda new, old: []
+    own_model: Callable[[dict], Optional[str]] = lambda cfg: cfg.get("model")
 
 
 # How each settable key reads on the command line: (flag, metavar, help), where the flag
@@ -75,6 +86,20 @@ FLAGS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def host(url: str) -> str:
+    """`host:port` of `url`, the port explicit, so a key confirmed for one never goes to the other."""
+    u = urllib.parse.urlparse(url)
+    try:
+        port = u.port or {"http": 80, "https": 443}.get(u.scheme, 0)
+    except ValueError:
+        port = 0
+    return f"{(u.hostname or '').lower()}:{port}"
+
+
+def off_machine(url: str) -> bool:
+    return not guard.is_loopback(url)
+
+
 def check_url(url: str) -> None:
     """A key belongs in the keychain or the environment, where Augur never prints it; a URL is
     printed by --list, so one carrying a password or a query string is refused."""
@@ -93,7 +118,7 @@ def reply(resp: Any, model: str, keep: bool = False) -> dict:
     if not isinstance(resp, dict) or not isinstance(resp.get("answers"), dict):
         raise errors.AugurUnavailable(f"unexpected response shape: {str(resp)[:200]}")
     usage: dict = resp["usage"] if isinstance(resp.get("usage"), dict) else {}
-    out = dict(resp) if keep else {"answers": resp["answers"]}
+    out = dict(resp) if keep else {"model": None, "answers": resp["answers"]}
     out["model"] = str(resp.get("model") or model)
     try:
         out["usage"] = {"input_tokens": int(usage.get("input_tokens") or 0)}

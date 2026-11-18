@@ -10,7 +10,8 @@ from pathlib import Path
 __version__ = "0.6.1"                          # the one home: pyproject.toml and the formula's test read it
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))                  # augurlib and the panoply-lib copies, installed flat or not
+if str(HERE) not in sys.path:                  # augurlib and the panoply-lib copies, installed flat or not;
+    sys.path.append(str(HERE))                 # appended, so a caller's own modules keep their names
 
 from augurlib import paths  # noqa: E402
 from augurlib.cli import main as cli_main  # noqa: E402

@@ -41,7 +41,7 @@ def _guided_backend(name=None):
         tname, kind = menu[pick]
         got = kind.run(UI, manifest._defaults()["backends"].get(tname))
         if got is None:
-            return 3 if pick == 0 else 2
+            return kind.declined
         settings, suggested = got
         while True:
             name = name or _prompt("A name for this backend", suggested)

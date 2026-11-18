@@ -103,12 +103,21 @@ class Backends(AugurCase):
         self.assertTrue([f.split(",")[0] for f in manifest_findings()] == ["augur.json: backends.jev: unknown key 'models_url'"],
                         f"a 0.4 models_url drew no finding: {manifest_findings()}")
         with open(Path(home) / "augur.json", "w") as f:
-            json.dump({"backends": {"hosted": {"type": "systemone", "url": "http://h/v1/systemone", "model": "m",
-                                               "env_key": "AUGUR_SELFTEST_ABSENT_KEY"}}}, f)
+            json.dump({"backends": {"hosted": {"type": "systemone", "url": "https://h/v1/systemone", "model": "m",
+                                               "env_key": "AUGUR_SELFTEST_ABSENT_KEY", "key_host": "h:443"}}}, f)
         os.environ["AUGUR_SELFTEST_ABSENT_KEY"] = "k2"
         ask("banana", fruit, backend="hosted")
-        os.environ.pop("AUGUR_SELFTEST_ABSENT_KEY")
         self.assertTrue(stub.requests[-1][1].get("Authorization") == "Bearer k2", "a second hosted key was not sent")
+        n = len(stub.requests)
+        for url, key_host, why in (("https://elsewhere/v1/systemone", "h:443", "confirmed for h:443"),
+                                   ("https://h/v1/systemone", None, "confirmed for no host"),
+                                   ("http://h:443/v1/systemone", "h:443", "not https")):
+            entry = {"type": "systemone", "url": url, "model": "m", "env_key": "AUGUR_SELFTEST_ABSENT_KEY"}
+            with open(Path(home) / "augur.json", "w") as f:
+                json.dump({"backends": {"hosted": {**entry, **({"key_host": key_host} if key_host else {})}}}, f)
+            self.assertTrue(unavailable(lambda: ask("x", fruit, backend="hosted"), why), f"key sent: {url} {key_host}")
+        self.assertEqual(len(stub.requests), n, "a refused key still made a request")
+        os.environ.pop("AUGUR_SELFTEST_ABSENT_KEY")
 
     def test_unavailable(self):
         home, fruit = self.home, self.fruit

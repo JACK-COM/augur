@@ -41,8 +41,34 @@ def key(cfg: dict) -> Optional[str]:
 
 
 def headers(cfg: dict) -> dict:
+    """The request headers, the key included only for the host a person confirmed it for
+    (`key_host`, written when they did) and only over https off this machine."""
     k = key(cfg)
+    if k:
+        url = cfg["url"]
+        if cfg.get("key_host") != common.host(url):
+            raise errors.AugurUnavailable(f"the key was confirmed for {cfg.get('key_host') or 'no host'}, not "
+                                          f"{common.host(url)}; a person at a terminal confirms the new host with  "
+                                          f"augur configure backend <name> --url {url}")
+        if common.off_machine(url) and urllib.parse.urlparse(url).scheme != "https":
+            raise errors.AugurUnavailable(f"{url} is not https, so the key would cross the network readable")
     return {"Content-Type": "application/json", **({"Authorization": f"Bearer {k}"} if k else {})}
+
+
+def gates(new: dict, old: dict) -> List[str]:
+    url, keyed = new.get("url") or "", bool(new.get("keychain_service") or new.get("env_key"))
+    out = []
+    if common.off_machine(url):
+        if urllib.parse.urlparse(url).scheme != "https":
+            raise ValueError(f"--url {url}: a backend off this machine is reached over https")
+        if url != old.get("url"):
+            out.append(f"send every text Augur asks it to {common.host(url)}")
+    moved = any(new.get(k) != old.get(k) for k in ("url", "keychain_service", "env_key"))
+    if keyed and moved:
+        where = " and ".join(([f"keychain service {new['keychain_service']}"] if new.get("keychain_service") else [])
+                             + ([f"environment variable {new['env_key']}"] if new.get("env_key") else []))
+        out.append(f"send the key in {where} to {common.host(url)}")
+    return out
 
 
 def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: float, retries: int) -> dict:
@@ -231,11 +257,15 @@ TYPE = common.BackendType(
         "keychain_service": {"type": "string", "description": "macOS keychain service holding the API key. "
                              "Omit it and `env_key` for a server that takes no key."},
         "env_key": {"type": "string", "description": "Environment variable holding the API key."},
+        "key_host": {"type": "string", "description": "host:port the key may be sent to, written by "
+                     "`augur configure backend` when a person confirms it; any other host gets no key."},
+        "models": common.MODELS,
         "timeout": common.TIMEOUT,
         "price_per_mtok": common.PRICE}},
     ask=ask, describe=describe, flags=("url", "model", "keychain_service", "env_key"),
-    kinds=(common.Kind("Ollama, on this machine (no key, no bill)", guided_ollama),
+    kinds=(common.Kind("Ollama, on this machine (no key, no bill)", guided_ollama, declined=3),
            common.Kind("a hosted System One API, with an API key", guided_hosted, hosted_key)),
     cold_start=lambda cfg: not (cfg.get("keychain_service") or cfg.get("env_key")),
+    gates=gates,
     leftovers=leftovers,
 )

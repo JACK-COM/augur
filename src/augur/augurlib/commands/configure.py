@@ -28,7 +28,7 @@ def args(f: argparse.ArgumentParser) -> None:
     fb.add_argument("--list", action="store_true", help="every backend, its type and origin, and the default")
     fb.add_argument("--remove", metavar="NAME", help="remove your entry; a shipped name gets its shipped settings back")
     fc = part("check", "set what `check --live` asks")
-    fc.add_argument("file", nargs="?", help="a calibrate items file (at most %d items) to copy as the live check" % check.CHECK_MAX)
+    fc.add_argument("file", nargs="?", help="a calibrate items file (at most %d items) to copy as the live check" % paths.CHECK_MAX)
     fc.add_argument("--threshold", type=float, metavar="P", help="a label is right when its answer is at or above P for "
                     "true and below it for false (default 0.5)")
     fc.add_argument("--reset", action="store_true", help="remove the live check; the built-in questions return")
