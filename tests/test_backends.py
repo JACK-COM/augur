@@ -10,7 +10,7 @@ from tests.harness import AugurCase, unavailable
 
 from augurlib import paths  # noqa: E402
 from augur import ask, available, manifest_findings  # noqa: E402
-from augurlib.backends import _command_argv  # noqa: E402
+from augurlib.backends.command import argv as _command_argv  # noqa: E402
 from augurlib.manifest import BACKEND_TYPES, _backend, _defaults  # noqa: E402
 
 

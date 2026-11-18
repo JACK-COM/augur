@@ -6,6 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import backends
 from . import calibrate
 from . import check
 from . import client
@@ -19,6 +20,7 @@ from . import keys
 from . import manifest
 from . import paths
 from . import request
+from .backends import common as btype
 
 
 def _configure_backend(args):
@@ -134,19 +136,11 @@ def main(argv, version=""):
                              allow_abbrev=False, **fmt)
     fb = part("backend", "add, change, list or remove a backend")
     fb.add_argument("name", nargs="?", help="the backend's name; guided in a terminal when no flag follows")
-    fb.add_argument("--type", choices=sorted(manifest.BACKEND_TYPES), help="the protocol it speaks")
-    fb.add_argument("--url", help="systemone: the endpoint")
-    fb.add_argument("--model", help="systemone or command: the model to ask; pin a version")
-    fb.add_argument("--key-service", dest="keychain_service", metavar="NAME",
-                    help="systemone: the macOS keychain service holding the key")
-    fb.add_argument("--key-env", dest="env_key", metavar="VAR", help="systemone: the environment variable holding the key")
-    fb.add_argument("--command", help="command: the script, as one string split as a shell would")
-    fb.add_argument("--python", help="laya: the interpreter of a venv holding laya and torch")
-    fb.add_argument("--checkpoint", help="laya: the checkpoint to load")
-    fb.add_argument("--device", help="laya: cuda, mps or cpu")
-    fb.add_argument("--timeout", type=entries._positive, metavar="S", help="seconds to wait for an answer")
-    fb.add_argument("--price", type=entries._price, dest="price_per_mtok", metavar="USD",
-                    help="USD per million input tokens, for the usage ledger")
+    fb.add_argument("--type", choices=sorted(backends.TYPES), help="the protocol it speaks")
+    for key in backends.entry_flags()[1:]:
+        spec = btype.FLAGS[key]
+        fb.add_argument(spec.get("flag", "--" + key.replace("_", "-")), dest=key, type=spec.get("type"),
+                        metavar=spec.get("metavar"), help=backends.flag_help(key))
     fb.add_argument("--default", action="store_true", help="make it the default backend")
     fb.add_argument("--store-key", action="store_true", help="prompt for its key through macOS `security`")
     fb.add_argument("--force", action="store_true", help="save it even when it does not answer")

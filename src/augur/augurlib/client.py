@@ -27,8 +27,8 @@ def available(backend=None):
 
 def _probe(name, cfg, t, caller="check", timeout=60):
     """`available` for a resolved entry, saved or not. -> (ok, reason)"""
-    if backends.ADAPTERS[t][1]:
-        return backends.ADAPTERS[t][1](cfg)
+    if backends.TYPES[t].available:
+        return backends.TYPES[t].available(cfg)
     try:          # a backend that starts is not yet one that answers
         r = _answer(name, cfg, t, {"text": "banana", "uid": uuid.uuid4().hex},
                     {"fruit": qtypes.noul("Is the word in `text` the name of a fruit?")}, None, timeout, 0, caller)
@@ -60,7 +60,7 @@ def ask(state, questions, *, subject=None, siblings=None, backend=None, model=No
 def _answer(name, cfg, t, state, questions, model, timeout, retries, caller):
     """One checked, ledgered call to a resolved entry."""
     try:
-        resp = backends.ADAPTERS[t][0](cfg, state, questions, model, timeout, retries)
+        resp = backends.TYPES[t].ask(cfg, state, questions, model, timeout, retries)
     except errors.NoKey as e:
         raise errors.NoKey(f"{e}; `augur configure backend {name} --store-key` stores one") from None
     qtypes._check_answers(resp["answers"])

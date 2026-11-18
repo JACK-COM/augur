@@ -5,8 +5,8 @@ import os
 import shlex
 import shutil
 import sys
-from pathlib import Path
 
+from . import backends as types
 from . import errors
 from . import guided
 from . import manifest
@@ -69,14 +69,11 @@ def _uninstall(yes, dry):
         backends = manifest._manifest().get("backends") or {}
     except errors.AugurUnavailable:
         backends = {}
-    for service in sorted({c["keychain_service"] for c in backends.values()
-                           if manifest._type(c) == "systemone" and c.get("keychain_service")}):
-        print(f"  a key:        security delete-generic-password -a \"$USER\" -s {service}")
+    for line in sorted({ln for c in backends.values() if manifest._type(c) in types.TYPES
+                        for ln in types.TYPES[manifest._type(c)].leftovers(c)}):
+        print(line)
     if paths.home().is_dir():
         print(f"  the home:     rm -r {paths.home()}   (augur.json, its schema and the usage ledger)")
-    for py in sorted({c["python"] for c in backends.values() if manifest._type(c) == "laya" and c.get("python")}):
-        if not str(Path(py).expanduser()).startswith(str(paths.LAYA_VENV)):
-            print(f"  a laya interpreter the manifest names elsewhere: {py}")
     if paths.PACKAGED:
         print("  the command:  brew uninstall jack-com/panoply/augur   (or `uv tool uninstall augur`)")
     else:

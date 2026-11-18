@@ -5,50 +5,15 @@ import json
 import os
 from pathlib import Path
 
+from . import backends
 from . import errors
 from . import paths
 
 
-_STR = {"type": "string"}
-
-
-_PRICE = {"type": "number", "description": "USD per million input tokens, for the usage ledger."}
-
-
-_TIMEOUT = {"type": "number", "description": "Seconds to wait for an answer (default 60)."}
-
-
-_TYPE = {"type": "string", "description": "The protocol this backend speaks: systemone, laya or command."}
-
-
-# One schema per backend type. An entry is checked against the schema its `type` names;
-# the shared checker has no oneOf, so the dispatch is Augur's (`_entry_findings`).
-BACKEND_TYPES = {
-    "systemone": {"type": "object", "additionalProperties": False, "required": ["url"], "properties": {
-        "type": _TYPE,
-        "url": {"type": "string", "description": "The System One endpoint, e.g. http://localhost:11434/v1/systemone."},
-        "model": {"type": "string", "description": "The model to ask; pin a version, since a threshold does not transfer."},
-        "keychain_service": {"type": "string", "description": "macOS keychain service holding the API key. "
-                             "Omit it and `env_key` for a server that takes no key."},
-        "env_key": {"type": "string", "description": "Environment variable holding the API key."},
-        "timeout": _TIMEOUT,
-        "price_per_mtok": _PRICE}},
-    "laya": {"type": "object", "additionalProperties": False, "properties": {
-        "type": _TYPE,
-        "python": {"type": "string", "description": "Interpreter of a venv holding laya and torch."},
-        "checkpoint": {"type": "string", "description": "Checkpoint to load; a fine-tune goes here."},
-        "device": {"type": ["string", "null"], "description": "cuda, mps or cpu; null lets laya pick."},
-        "head_max_len": {"type": "integer"},
-        "price_per_mtok": _PRICE}},
-    "command": {"type": "object", "additionalProperties": False, "required": ["command"], "properties": {
-        "type": _TYPE,
-        "command": {"type": ["array", "string"], "items": {"type": "string"},
-                    "description": "The command: an argument list, or one string split as a shell would. "
-                                   "It reads {questions, state, model?} on stdin and prints {answers, model?, usage?}."},
-        "model": {"type": "string", "description": "Sent as `model` in every request; --model overrides it."},
-        "timeout": _TIMEOUT,
-        "price_per_mtok": _PRICE}},
-}
+# One schema per backend type, each declared by its type's module. An entry is checked
+# against the schema its `type` names; the shared checker has no oneOf, so the dispatch is
+# Augur's (`_entry_findings`).
+BACKEND_TYPES = backends.schemas()
 
 
 # Every key any type takes: an entry whose type cannot be resolved is checked against this,

@@ -6,6 +6,7 @@ import os
 import time
 from pathlib import Path
 
+from . import backends
 from . import client
 from . import errors
 from . import manifest
@@ -30,8 +31,7 @@ def calibrate(spec, *, backend=None, runs=1, limit=None, questions=None, workers
     name, cfg, t = manifest._backend(backend)
     qs = {k: v for k, v in spec["questions"].items() if not questions or k in questions}
     items = spec["items"][:limit] if limit else spec["items"]
-    if t == "laya":
-        workers = 1  # one worker process, one device
+    workers = backends.TYPES[t].workers or workers
     t0 = time.time()
     scores = {it["id"]: {q: [] for q in qs} for it in items}
     tokens = []
