@@ -3,7 +3,8 @@ import unittest
 
 from tests.harness import AugurCase
 
-from augur import _auroc, calibrate  # noqa: E402
+from augur import calibrate  # noqa: E402
+from augurlib.calibrate import _auroc  # noqa: E402
 
 
 class Calibrate(AugurCase):

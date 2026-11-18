@@ -8,7 +8,10 @@ from pathlib import Path
 
 from tests.harness import AugurCase, unavailable
 
-from augur import BACKEND_TYPES, DEFAULTS_FILE, HERE, _backend, _command_argv, _defaults, ask, available, manifest_findings  # noqa: E402
+from augurlib import paths  # noqa: E402
+from augur import ask, available, manifest_findings  # noqa: E402
+from augurlib.backends import _command_argv  # noqa: E402
+from augurlib.manifest import BACKEND_TYPES, _backend, _defaults  # noqa: E402
 
 
 class Backends(AugurCase):
@@ -16,7 +19,7 @@ class Backends(AugurCase):
         home, fruit = self.home, self.fruit
         cmd, seen = self.stand()
         # a command backend: a stand-in script, then `augur ask --request -` itself as the command
-        me = [sys.executable, str(HERE / "augur.py")]
+        me = [sys.executable, str(paths.HERE / "augur.py")]
         with open(Path(home) / "augur.json", "w") as f:
             json.dump({"backends": {
                 "stand": {"command": cmd("ok"), "price_per_mtok": 2.0},
@@ -58,7 +61,7 @@ class Backends(AugurCase):
         home, stub, fruit = self.home, self.stub, self.fruit
         cmd, _ = self.stand()
         # the shipped defaults are configuration of the user's shape: every entry typed, all clean
-        self.assertTrue(manifest_findings(DEFAULTS_FILE) == [], f"defaults.json: {manifest_findings(DEFAULTS_FILE)}")
+        self.assertTrue(manifest_findings(paths.DEFAULTS_FILE) == [], f"defaults.json: {manifest_findings(paths.DEFAULTS_FILE)}")
         self.assertTrue(all(e.get("type") in BACKEND_TYPES for e in _defaults()["backends"].values()),
                         "defaults.json: an entry names no known type")
         # a keyless systemone entry, as Ollama serves one; a type change replacing a default whole

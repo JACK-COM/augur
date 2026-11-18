@@ -7,7 +7,9 @@ from pathlib import Path
 
 from tests.harness import AugurCase
 
-from augur import CHECK_MAX, _check_file, _check_spec, choice, main  # noqa: E402
+from augurlib import paths  # noqa: E402
+from augur import choice, main  # noqa: E402
+from augurlib.check import CHECK_MAX, _check_spec  # noqa: E402
 
 
 class Check(AugurCase):
@@ -41,7 +43,7 @@ class Check(AugurCase):
             codes = [main(["configure", "check"]), main(["configure", "check", str(items), "--threshold", "0.4"]),
                      main(["configure", "check"]), main(["configure", "check", str(items), "--reset"]),
                      main(["configure", "check", "--threshold", "0.4"])]
-            _check_file().write_text(json.dumps({"threshold": 0.5, "questions": fruit, "items": [
+            paths.check_file().write_text(json.dumps({"threshold": 0.5, "questions": fruit, "items": [
                 {"id": "b", "text": "banana", "labels": {"fruit": True}, "siblings": 5}]}))
             codes += [main(["check", "--live"]), main(["configure", "check", "--reset"])]
         self.assertTrue(codes == [0, 0, 0, 2, 2, 2, 0], f"configure check view, flag combinations, a hand-broken copy: {codes}")
@@ -62,7 +64,7 @@ class Check(AugurCase):
                 self.fail(f"_check_spec accepted a spec lacking {fragment}")
             except ValueError as e:
                 self.assertTrue(fragment in str(e), f"_check_spec: {e!r} does not name {fragment}")
-        self.assertTrue(not _check_file().exists(), "--reset left check.json behind")
+        self.assertTrue(not paths.check_file().exists(), "--reset left check.json behind")
 
 
 if __name__ == "__main__":

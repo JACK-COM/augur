@@ -10,7 +10,10 @@ from pathlib import Path
 
 from tests.harness import AugurCase
 
-from augur import PROBE_TIMEOUT, _backend, _guided_backend, _manifest, main  # noqa: E402
+from augur import main  # noqa: E402
+from augurlib.entries import PROBE_TIMEOUT  # noqa: E402
+from augurlib.guided import _guided_backend  # noqa: E402
+from augurlib.manifest import _backend, _manifest  # noqa: E402
 
 
 class Configure(AugurCase):

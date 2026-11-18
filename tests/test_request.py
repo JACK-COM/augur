@@ -9,7 +9,8 @@ from pathlib import Path
 
 from tests.harness import AugurCase
 
-from augur import _request, main  # noqa: E402
+from augur import main  # noqa: E402
+from augurlib.request import _request  # noqa: E402
 
 
 class Request(AugurCase):

@@ -7,7 +7,9 @@ from pathlib import Path
 
 from tests.harness import AugurCase
 
-from augur import _acct, _manifest_lock, _user_manifest, _write_json  # noqa: E402
+from augurlib.fsio import _manifest_lock, _write_json  # noqa: E402
+from augurlib.keys import _acct  # noqa: E402
+from augurlib.manifest import _user_manifest  # noqa: E402
 
 
 class Files(AugurCase):

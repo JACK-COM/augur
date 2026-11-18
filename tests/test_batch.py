@@ -3,7 +3,8 @@ import unittest
 
 from tests.harness import AugurCase
 
-from augur import BatchTooLarge, MAX_BATCH, batch, noul  # noqa: E402
+from augur import BatchTooLarge, batch, noul  # noqa: E402
+from augurlib.client import MAX_BATCH  # noqa: E402
 
 
 class Batch(AugurCase):
