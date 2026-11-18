@@ -29,6 +29,22 @@ Then run `augur configure backend`, which asks where your model runs and checks 
 
 Python 3.9 or later and numpy. `jev` needs network access and a key; an Ollama model needs Ollama 0.35 or later; `laya` needs `laya` and `torch` in a virtualenv of its own; a command backend needs whatever its script needs. The keychain lookup is macOS; elsewhere the key comes from `TYPESAFE_API_KEY`. Tested on macOS and Linux (Debian, Python 3.12); on Windows, run it under WSL.
 
+## Security
+
+Augur is often run by an AI agent reading text it did not write, so what a backend may do is a person's choice, not the agent's.
+
+- **A person confirms.** `augur configure backend` saves an entry that runs a program (a command, laya's interpreter or checkpoint), sends text off this machine, or sends a key only when a person at a terminal types `yes`. The same holds for making an off-machine backend the default, or removing one so that an off-machine default comes back. Without a terminal it saves nothing, runs nothing, and prints the line for the person to run.
+- **Keys go where they were confirmed.** A key is sent only to the host and port a person confirmed it for (`key_host`), and only over https off this machine. Augur follows no redirect, and a server on this machine is reached directly, never through a proxy.
+- **Requests stay in bounds.** A request's `model` must be the entry's own or one of its `models`, except on a keyless server on this machine.
+- **Remote text is made safe.** Every string a backend, server or script returns is stripped of terminal controls before it is printed or written to the usage ledger. A ledger cell that a spreadsheet would run as a formula is quoted.
+- **Every wait is bounded.** Replies, requests and files are capped, and every wait has a deadline.
+
+These residuals are accepted:
+
+- An agent that fakes a terminal (`script`, a pty) passes the person check.
+- Without Locket's hooks installed, an agent's own file tools can edit `~/.augur/augur.json` directly. With them, a tool or shell write naming the file is refused.
+- An environment variable set on an agent's own command line, such as `AUGUR_HOME`, applies to that run only.
+
 ## Releasing
 
 `make version` (or `version-minor`, `version-major`) computes the next version from `__version__` and hands it to `scripts/release.sh X.Y.Z`, which refuses a module over 800 lines, runs `make test`, stamps it, tags and pushes, then moves the formula in [the tap](https://github.com/JACK-COM/homebrew-panoply) to the new tarball and names any guide page the release has moved past. `make test` checks the panoply-lib copies, runs `tests/` (stdlib unittest; `AUGUR_SRC` points the suites at another tree) and the install smoke check, `augur selftest`.
