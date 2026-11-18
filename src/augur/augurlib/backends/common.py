@@ -159,6 +159,8 @@ def run_capped(argv: list, stdin: str, timeout: float, cap: int) -> Tuple[int, s
         if p.poll() is None:
             p.kill()
             p.wait()
+        for f in (p.stdout, p.stderr):
+            f.close()
 
 
 def parse(raw: Any) -> Any:
