@@ -1,9 +1,11 @@
 """The systemone backend: TypeSafe's System One API over HTTP, which Jev's host and Ollama
 0.35+ (at /v1/systemone) both serve, so any such model is a `url` and a `model`.
 """
+import http.client
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -12,10 +14,14 @@ import urllib.parse
 import urllib.request
 from typing import Any, List, Optional, Tuple
 
+import _guard as guard
+import _web as web
+
 from .. import errors
 from . import common
 
 RETRY_AFTER_CAP = 30.0       # never let a report-only instrument sleep for as long as a server asks
+REPLY_CAP = 1 << 20          # an answer to typed questions is small; a larger body is not one
 OLLAMA_MIN = (0, 35)         # the first Ollama release serving /v1/systemone
 
 
@@ -78,8 +84,9 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
     req = urllib.request.Request(cfg["url"], data=body, headers=headers(cfg))
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                resp = json.load(r)
+            # no redirect: a 3xx would carry the request, key included, somewhere not confirmed
+            with web.open_url(req, timeout, follow=None) as r:
+                resp = json.loads(web.read(r, REPLY_CAP))
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < retries:
                 ra = e.headers.get("retry-after")
@@ -90,11 +97,12 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
                     delay = 1.5 * (attempt + 1)
                 time.sleep(delay)
                 continue
-            detail = e.read().decode(errors="ignore")[:300]
+            detail = guard.relay(e.read(4096).decode(errors="ignore"), 300)
             e.close()
             raise errors.AugurUnavailable(f"HTTP {e.code}{' (rate limited, retries exhausted)' if e.code == 429 else ''}: {detail}") from e
-        except (urllib.error.URLError, OSError, ValueError) as e:  # ValueError covers a non-JSON body
-            raise errors.AugurUnavailable(f"network or body: {e}") from e
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
+            # ValueError covers a non-JSON or oversized body; HTTPException a connection cut mid-reply
+            raise errors.AugurUnavailable(f"network or body: {guard.relay(e, 300)}") from e
         return common.reply(resp, model or "?")
     raise errors.AugurUnavailable("unreachable: retry loop exhausted without a response")
 
@@ -105,7 +113,7 @@ def describe(cfg: dict) -> str:
 
 def leftovers(cfg: dict) -> List[str]:
     s = cfg.get("keychain_service")
-    return [f"  a key:        security delete-generic-password -a \"$USER\" -s {s}"] if s else []
+    return [f"  a key:        security delete-generic-password -a \"$USER\" -s {shlex.quote(s)}"] if s else []
 
 
 # ---- guided: Ollama on this machine, or a hosted API with a key
@@ -143,7 +151,7 @@ def _ollama_pull(base: str, model: str) -> None:
                     raise errors.AugurUnavailable(ev["error"])
                 total, done = ev.get("total"), ev.get("completed")
                 msg = ev.get("status", "") + (f" {done * 100 // total}%" if total and done else "")
-                print("\r" + msg[:72].ljust(72), end="", flush=True)
+                print("\r" + guard.relay(msg, 72).ljust(72), end="", flush=True)
     except urllib.error.HTTPError as e:
         raise errors.AugurUnavailable(f"HTTP {e.code}: {e.read().decode(errors='ignore')[:300]}") from e
     except (urllib.error.URLError, OSError, ValueError) as e:

@@ -121,9 +121,13 @@ def _manifest():
                 user = json.load(f)
         except ValueError as e:
             raise errors.AugurUnavailable(f"{p}: not JSON ({e})")
+        if not isinstance(user, dict) or not isinstance(user.get("backends") or {}, dict):
+            raise errors.AugurUnavailable(f"{p}: not an object of settings; `augur check` names the fault")
         if "backend" in user:
             m["backend"] = user["backend"]
         for name, cfg in (user.get("backends") or {}).items():
+            if not isinstance(cfg or {}, dict):
+                raise errors.AugurUnavailable(f"{p}: backends.{name} is not an object")
             m["backends"][name] = _merged(m["backends"].get(name) or {}, cfg or {})
     if os.environ.get("AUGUR_BACKEND"):
         m["backend"] = os.environ["AUGUR_BACKEND"]

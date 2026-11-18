@@ -30,6 +30,8 @@ def _check_answers(answers):
     for qid, a in answers.items():
         if not isinstance(a, dict):
             raise errors.AugurUnavailable(f"answer {qid!r} is not an object: {str(a)[:100]}")
+        if a.get("type") == "noul" and "noul" not in a:
+            raise errors.AugurUnavailable(f"answer {qid!r} is a noul with no `noul`")
         probs = [(k, a[k]) for k in ("noul", "confidence") if k in a]
         probs += [(f"probabilities.{k}", v) for k, v in (a.get("probabilities") or {}).items()]
         for k, v in probs:

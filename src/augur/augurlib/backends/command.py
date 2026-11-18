@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+import _guard as guard
+
 from .. import errors
 from . import common
 
@@ -41,12 +43,12 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
     except OSError as e:
         raise errors.AugurUnavailable(f"command {run[0]}: {e}") from e
     if out.returncode != 0:
-        why = (out.stderr.strip().splitlines() or ["no message"])[-1][:200]
+        why = guard.relay((out.stderr.strip().splitlines() or ["no message"])[-1], 200)
         raise errors.AugurUnavailable(f"command {run[0]} exited {out.returncode}: {why}")
     try:
         resp = json.loads(out.stdout)
     except ValueError as e:
-        raise errors.AugurUnavailable(f"command {run[0]} printed something that is not JSON: {out.stdout[:200]!r}") from e
+        raise errors.AugurUnavailable(f"command {run[0]} printed something that is not JSON: {guard.relay(repr(out.stdout[:200]), 220)}") from e
     return common.reply(resp, model or Path(run[0]).name)
 
 

@@ -97,6 +97,9 @@ def _build_entry(name, given, replace=False):
         raise ValueError(NAME_RULE)
     if "url" in given:
         btype.check_url(given["url"])
+    for k in ("keychain_service", "env_key"):
+        if k in given and not btype.VAR_CHARS.fullmatch(str(given[k])):
+            raise ValueError(f"{k} {given[k]!r}: letters, digits and '_', not starting with a digit")
     shipped = manifest._defaults()["backends"]
     have = (manifest._user_manifest().get("backends") or {}).get(name) or {}
     entry = dict(given) if replace else manifest._merged(have, given, shipped.get(name))

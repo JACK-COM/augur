@@ -70,8 +70,10 @@ def _manifest_lock():
     and writes a small file, so one still holding it after LOCK_WAIT seconds is stuck, and the
     error names the lock to remove."""
     lock = paths.home() / "augur.json.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock, "w") as f:
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # never through a link: opening a planted one for writing would truncate its target
+    fd = os.open(lock, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with open(fd, "w") as f:
         deadline = time.monotonic() + LOCK_WAIT
         while True:
             try:

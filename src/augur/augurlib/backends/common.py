@@ -116,10 +116,10 @@ def reply(resp: Any, model: str, keep: bool = False) -> dict:
     input tokens, `model` what answered (else `model`); `keep` passes the reply's other keys
     through (laya's device and context). Any other shape is unavailable."""
     if not isinstance(resp, dict) or not isinstance(resp.get("answers"), dict):
-        raise errors.AugurUnavailable(f"unexpected response shape: {str(resp)[:200]}")
+        raise errors.AugurUnavailable(f"unexpected response shape: {guard.relay(resp, 200)}")
     usage: dict = resp["usage"] if isinstance(resp.get("usage"), dict) else {}
     out = dict(resp) if keep else {"model": None, "answers": resp["answers"]}
-    out["model"] = str(resp.get("model") or model)
+    out["model"] = guard.relay(resp.get("model") or model, 200)   # printed by check and logged
     try:
         out["usage"] = {"input_tokens": int(usage.get("input_tokens") or 0)}
     except (TypeError, ValueError):

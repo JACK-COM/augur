@@ -6,6 +6,8 @@ import sys
 from .. import client, errors, request
 from .base import Verb, bad_input, unavailable
 
+REQUEST_CAP = 8 << 20        # characters; every one of them is billed
+
 
 def args(a: argparse.ArgumentParser) -> None:
     a.add_argument("-q", "--questions", metavar="FILE", help="JSON file: {name: question}")
@@ -29,10 +31,13 @@ def run(a: argparse.Namespace) -> int:
             if a.questions is not None:
                 raise ValueError("--request carries the questions; drop -q")
             if a.request == "-":
-                req = json.load(sys.stdin)
+                raw = sys.stdin.read(REQUEST_CAP + 1)
             else:
                 with open(a.request) as f:
-                    req = json.load(f)
+                    raw = f.read(REQUEST_CAP + 1)
+            if len(raw) > REQUEST_CAP:
+                raise ValueError(f"the request passes {REQUEST_CAP // (1 << 20)} MB")
+            req = json.loads(raw)
             state, questions, kw = request._request(req)
             kw.update({k: v for k, v in flags.items() if v is not None})
         else:

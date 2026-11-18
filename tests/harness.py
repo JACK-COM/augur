@@ -85,6 +85,14 @@ class AugurCase(unittest.TestCase):
         opener = mock.patch("urllib.request.urlopen", self.stub)
         opener.start()
         self.addCleanup(opener.stop)
+        try:
+            import _web                           # the client's HTTP from 0.7: the same stand-in
+        except ImportError:
+            pass
+        else:
+            self.web = mock.patch.object(_web, "open_url", lambda req, timeout, **kw: self.stub(req, timeout))
+            self.web.start()
+            self.addCleanup(self.web.stop)
         # A person at a terminal says yes, so a case can save a backend that runs a command or
         # sends a key; the gate itself is test_gates.py's, against the real check.
         try:

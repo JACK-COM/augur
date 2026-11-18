@@ -55,6 +55,11 @@ def ask(state, questions, *, subject=None, siblings=None, backend=None, model=No
     if uid:
         state["uid"] = uuid.uuid4().hex
     name, cfg, t = manifest._backend(backend)
+    if model and model != backends.TYPES[t].own_model(cfg) and model not in (cfg.get("models") or []):
+        # a request's `model` picks among what the entry allows, never any model or checkpoint:
+        # a laya checkpoint is code it loads, and a lenient model is a screen turned off
+        raise errors.AugurUnavailable(f"backend {name} does not allow model {model!r}; add it to the entry's "
+                                      f"`models` to allow it")
     return _answer(name, cfg, t, state, questions, model, timeout, retries, caller)
 
 

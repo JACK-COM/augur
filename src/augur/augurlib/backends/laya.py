@@ -9,6 +9,8 @@ import threading
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+import _guard as guard
+
 from .. import errors, paths, qtypes
 from . import common
 
@@ -54,9 +56,9 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
     try:
         resp = json.loads(line)
     except ValueError as e:
-        raise errors.AugurUnavailable(f"laya worker sent a line that is not JSON: {line[:200]!r}") from e
+        raise errors.AugurUnavailable(f"laya worker sent a line that is not JSON: {guard.relay(repr(line[:200]), 220)}") from e
     if isinstance(resp, dict) and "error" in resp:
-        raise errors.AugurUnavailable(f"laya: {resp['error']}")
+        raise errors.AugurUnavailable(f"laya: {guard.relay(resp['error'], 300)}")
     return common.reply(resp, model or cfg["checkpoint"], keep=True)
 
 
@@ -101,7 +103,7 @@ def leftovers(cfg: dict) -> List[str]:
 
 TYPE = common.BackendType(
     name="laya",
-    schema={"type": "object", "additionalProperties": False, "properties": {
+    schema={"type": "object", "additionalProperties": False, "required": ["checkpoint"], "properties": {
         "type": common.TYPE,
         "python": {"type": "string", "description": "Interpreter of a venv holding laya and torch."},
         "checkpoint": {"type": "string", "description": "Checkpoint to load; a fine-tune goes here."},

@@ -5,6 +5,7 @@ import getpass
 import re
 import shutil
 import subprocess
+import shlex
 import sys
 
 
@@ -41,7 +42,7 @@ def _store_key(name, cfg):
     if service and sys.platform == "darwin" and shutil.which("security"):
         if not sys.stdin.isatty():
             print(f"storing a key needs a terminal, where `security` prompts for it. Or run:\n"
-                  f"  security add-generic-password -a \"$USER\" -s {service} -U -w", file=sys.stderr)
+                  f"  security add-generic-password -a \"$USER\" -s {shlex.quote(service)} -U -w", file=sys.stderr)
             return 2
         print(f"Paste the key at the prompt, then again to confirm; nothing echoes. "
               f"It goes in the keychain as {service}.")

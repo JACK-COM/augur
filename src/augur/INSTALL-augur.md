@@ -33,6 +33,8 @@ Spell the formula in full: homebrew-core has an unrelated cask named `augur`. Wi
 
 `augur configure backend` asks a backend one real question and writes its entry to `~/.augur/augur.json` (or `augur.json` in `$AUGUR_HOME`) only if it answers. A user at a terminal can run it with no arguments and answer its prompts. An agent uses the flags below, one command per backend. Only what differs from the shipped `jev` and `laya` entries is written.
 
+A backend that runs a program (a command, laya's interpreter), sends text to a host off this machine, or sends a key is saved only when a person at a terminal types `yes`, and nothing runs or is sent before that. Run from an agent, such a command saves nothing and prints the line for the user to run; hand it to them. A keyless model on this machine, such as Ollama's, needs no one.
+
 For `jev`, nothing needs adding but the key. Ask the user to run this in their own terminal; in Claude Code they can type it after `!`:
 
 ```
@@ -50,13 +52,13 @@ augur configure backend nimble --type systemone --url http://localhost:11434/v1/
 
 Name the sized tag over `latest`, which moves when the library updates and takes a calibrated threshold with it. Ollama refuses a model that is not a decision model ("not supported by System One") and one never pulled ("not found"), and either refusal leaves nothing saved. The first call loads the model; if later calls time out, rerun with `--timeout 120`.
 
-For another hosted System One provider, give the command to the user to run, because `--store-key` prompts for their key before the entry is checked:
+For another hosted System One provider, give the command to the user to run: it sends a key off this machine, so it asks them to confirm the host, and `--store-key` prompts for the key. The key is then sent only to that host, over https:
 
 ```
 augur configure backend acme --type systemone --url https://api.acme.example/v1/systemone --model acme-2.1 --key-service ACME_API_KEY --key-env ACME_API_KEY --price 0.05 --store-key
 ```
 
-For `laya`:
+For `laya`, the user runs the last line, since it names an interpreter Augur will run:
 
 ```
 uv venv --python 3.12 ~/.augur-laya
@@ -64,7 +66,7 @@ uv pip install --python ~/.augur-laya/bin/python laya torch
 augur configure backend laya --python ~/.augur-laya/bin/python
 ```
 
-For a command backend:
+For a command backend, the user runs it, since Augur will run that program on every call:
 
 ```
 augur configure backend mine --type command --command /abs/path/to/wrapper --price 0 --default
