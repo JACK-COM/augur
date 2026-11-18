@@ -65,9 +65,12 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
         try:
             p = _worker(cfg)
             assert p.stdin is not None and p.stdout is not None
-            p.stdin.write(json.dumps(req) + "\n")
-            p.stdin.flush()
-            line = _line(p, timeout)
+            # written under the same deadline as the answer: a worker stuck loading a model reads
+            # nothing, and a blocking write past the pipe's 64 KB would hold the lock forever
+            if not common.write_all(p.stdin.fileno(), (json.dumps(req) + "\n").encode(), time.monotonic() + timeout):
+                line = None
+            else:
+                line = _line(p, timeout)
             if line is None:
                 p.kill()
                 p.wait()

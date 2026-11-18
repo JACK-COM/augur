@@ -7,9 +7,17 @@ from .. import client, errors, request
 from .base import Verb, bad_input, count, unavailable
 
 
+def runs(v: str) -> int:
+    """argparse type: one to twenty repeats; each is a billed call per item."""
+    n = count(v)
+    if n > 20:
+        raise argparse.ArgumentTypeError("--runs takes at most 20; each run is a billed call per item")
+    return n
+
+
 def args(c: argparse.ArgumentParser) -> None:
     c.add_argument("items", help="JSON file of questions and labelled items")
-    c.add_argument("--runs", type=int, default=1, metavar="N", help="repeats per item (default 1)")
+    c.add_argument("--runs", type=runs, default=1, metavar="N", help="repeats per item (default 1, at most 20)")
     c.add_argument("--limit", type=int, metavar="N", help="first N items only")
     c.add_argument("--questions", metavar="a,b", help="comma-separated subset of the file's questions")
     c.add_argument("--workers", type=count, metavar="N",

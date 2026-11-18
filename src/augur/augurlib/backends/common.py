@@ -174,6 +174,27 @@ def run_capped(argv: list, stdin: str, timeout: float, cap: int) -> Tuple[int, s
             f.close()
 
 
+def write_all(fd: int, data: bytes, end: float) -> bool:
+    """Write `data` to a pipe by `end` (a time.monotonic() value): False when the reader
+    took too little of it in time. A blocking write to a reader that never reads holds its
+    caller forever once the pipe's 64 KB fill."""
+    import selectors
+    import time
+    os.set_blocking(fd, False)
+    view = memoryview(data)
+    with selectors.DefaultSelector() as sel:
+        sel.register(fd, selectors.EVENT_WRITE)
+        while view:
+            left = end - time.monotonic()
+            if left <= 0 or not sel.select(left):
+                return False
+            try:
+                view = view[os.write(fd, view[:65536]):]
+            except BlockingIOError:
+                continue
+    return True
+
+
 def parse(raw: Any) -> Any:
     """JSON from a backend, or unavailable: a body too deep to parse is a body that does not
     parse, never a RecursionError past the unavailable contract."""

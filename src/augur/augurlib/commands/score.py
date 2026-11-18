@@ -13,6 +13,7 @@ from .base import Verb, bad_input, count, unavailable
 
 
 REQUESTS_CAP = 100_000      # lines in one run, each held until the pool starts
+INPUT_CAP = 64 << 20         # characters read from stdin in all
 
 
 def args(s: argparse.ArgumentParser) -> None:
@@ -39,12 +40,16 @@ def drift(texts: List[Any], shape: dict) -> Optional[str]:
 def run(a: argparse.Namespace) -> int:
     try:
         reqs: list = []
-        n = 0
+        n, read = 0, 0
+        manifest._backend(a.backend)          # an unknown backend refuses before any input is held
         while True:
             line = sys.stdin.readline(request.REQUEST_CAP + 1)
             if not line:
                 break
             n += 1
+            read += len(line)
+            if read > INPUT_CAP:
+                raise ValueError(f"more than {INPUT_CAP >> 20} MB of requests; split the file")
             if len(reqs) >= REQUESTS_CAP:
                 raise ValueError(f"more than {REQUESTS_CAP} requests; split the file")
             if line.strip():

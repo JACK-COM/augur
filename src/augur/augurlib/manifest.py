@@ -98,8 +98,10 @@ def _defaults():
 
 def _type(entry, default=None):
     """An entry's type: its own, else the default's of the same name, else `command` for a
-    0.4 entry that names only a command. None when none of those resolves."""
-    return entry.get("type") or (default or {}).get("type") or ("command" if entry.get("command") else None)
+    0.4 entry that names only a command. None when none of those resolves, or when it is not
+    a string (a hand edit), which no lookup may take as a key."""
+    t = entry.get("type") or (default or {}).get("type") or ("command" if entry.get("command") else None)
+    return t if isinstance(t, str) else None
 
 
 def _merged(base, cfg, default=None):
@@ -121,7 +123,8 @@ def _manifest():
                 user = json.load(f)
         except (ValueError, RecursionError) as e:
             raise errors.AugurUnavailable(f"{p}: not JSON ({str(e)[:120]})")
-        if not isinstance(user, dict) or not isinstance(user.get("backends") or {}, dict):
+        if not isinstance(user, dict) or not isinstance(user.get("backends") or {}, dict) \
+                or not isinstance(user.get("backend", ""), str):
             raise errors.AugurUnavailable(f"{p}: not an object of settings; `augur check` names the fault")
         if "backend" in user:
             m["backend"] = user["backend"]
@@ -154,6 +157,10 @@ def _resolve(name, cfg):
     for k in BACKEND_TYPES[t].get("required", []):
         if not cfg.get(k):
             raise errors.AugurUnavailable(f"backend {name!r} is a {t} backend with no `{k}`")
+    found: list = []
+    _schema_lib().check_value(cfg, BACKEND_TYPES[t], f"backends.{name}", found)
+    if found:
+        raise errors.AugurUnavailable(f"augur.json: {found[0]}; `augur check` lists every fault")
     return t
 
 

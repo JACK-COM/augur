@@ -127,20 +127,22 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
     timeout = cfg.get("timeout") or timeout
     body = json.dumps({"state": state, **({"model": model} if model else {}), "questions": questions}).encode()
     req = urllib.request.Request(cfg["url"], data=body, headers=headers(cfg))
+    # the whole call, retries and waits included, ends by about three of its own timeouts
+    whole = web.Deadline(timeout * 3)
     for attempt in range(retries + 1):
-        last = attempt == retries
+        last = attempt == retries or (whole.left() or 0) < 1
         try:
             # no redirect: a 3xx would carry the request, key included, somewhere not confirmed
             # one deadline over connect and every read: a socket timeout alone counts per read,
             # which a server dripping a byte at a time holds open as long as it likes
-            limit = web.Deadline(timeout)
+            limit = web.Deadline(min(timeout, whole.left() or timeout))
             with web.open_url(req, timeout, deadline=limit, follow=None) as r:
                 resp = common.parse(web.read(r, REPLY_CAP, limit))
         except urllib.error.HTTPError as e:
             ra = e.headers.get("retry-after") if e.headers else None
             if (e.code == 429 or 500 <= e.code < 600) and not last:
                 e.close()
-                time.sleep(min(backoff(attempt, ra), timeout))
+                time.sleep(min(backoff(attempt, ra), timeout, whole.left() or 0))
                 continue
             detail = guard.relay(e.read(4096).decode(errors="ignore"), 300)
             e.close()
@@ -150,7 +152,7 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
             # cut mid-reply or reset: asked again, as a 5xx is; a timeout is not, since the
             # server may still be answering (and billing) the first one
             if not last:
-                time.sleep(backoff(attempt, None))
+                time.sleep(min(backoff(attempt, None), whole.left() or 0))
                 continue
             raise errors.AugurUnavailable(f"network: {guard.relay(e, 300)} (retries exhausted)") from e
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
@@ -178,8 +180,9 @@ def _ollama_base() -> str:
 
 
 def _get_json(url: str, timeout: float = 10) -> Any:
-    with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as r:
-        return json.load(r)
+    d = web.Deadline(timeout)
+    with web.open_url(urllib.request.Request(url), timeout, deadline=d, follow=None) as r:
+        return json.loads(web.read(r, REPLY_CAP, d))
 
 
 def _ollama_models(base: str) -> list:
@@ -195,8 +198,10 @@ def _ollama_pull(base: str, model: str) -> None:
     req = urllib.request.Request(base + "/api/pull", data=json.dumps({"model": model}).encode(),
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with web.open_url(req, 60, follow=None) as r:      # a pull runs minutes: per-read bound only
             for line in r:
+                if len(line) > REPLY_CAP:
+                    raise ValueError("a progress line past 1 MB")
                 if not line.strip():
                     continue
                 ev = json.loads(line)
@@ -208,7 +213,7 @@ def _ollama_pull(base: str, model: str) -> None:
     except urllib.error.HTTPError as e:
         raise errors.AugurUnavailable(f"HTTP {e.code}: {guard.relay(e.read(4096).decode(errors='ignore'), 300)}") from e
     except (urllib.error.URLError, OSError, ValueError) as e:
-        raise errors.AugurUnavailable(f"pull: {e}") from e
+        raise errors.AugurUnavailable(f"pull: {guard.relay(e, 200)}") from e
     finally:
         print()
 
@@ -232,7 +237,7 @@ def guided_ollama(ui: Any, shipped: Optional[dict]) -> Optional[Tuple[dict, str]
         v = guard.relay(_get_json(base + "/api/version")["version"], 40)
         models = _ollama_models(base)
     except (OSError, ValueError, KeyError, TypeError) as e:
-        print(f"Ollama is not answering at {base} ({e}). Start it (open the app, or run `ollama serve`) and "
+        print(f"Ollama is not answering at {guard.relay(base, 120)} ({guard.relay(e, 200)}). Start it (open the app, or run `ollama serve`) and "
               f"run this again; https://ollama.com/download has it.", file=sys.stderr)
         return None
     if tuple(int(x) for x in re.findall(r"\d+", v)[:2]) < OLLAMA_MIN:
@@ -257,11 +262,11 @@ def guided_ollama(ui: Any, shipped: Optional[dict]) -> Optional[Tuple[dict, str]
             _ollama_pull(base, tag)
             models = _ollama_models(base)
         except (errors.AugurUnavailable, OSError, ValueError, KeyError, TypeError) as e:
-            print(f"pull {tag}: {e}", file=sys.stderr)
+            print(f"pull {guard.relay(tag, 80)}: {guard.relay(e, 200)}", file=sys.stderr)
             return None
     else:
         tag = shown[i]["name"]
-    exact = _exact_tag(tag, models)
+    exact = guard.relay(_exact_tag(tag, models), 120)
     if exact.endswith(":latest"):
         print(f"{exact} moves when the library updates, and a calibrated threshold moves with it. To pin it, "
               f"`ollama cp {exact} {exact[:-7]}:<tag>` with the sized tag ollama.com/library lists, then run this again.")

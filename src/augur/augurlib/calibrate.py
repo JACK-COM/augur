@@ -54,6 +54,11 @@ def check_spec(spec: Any) -> dict:
         if not (isinstance(it, dict) and isinstance(it.get("id"), (str, int)) and "text" in it
                 and isinstance(it.get("labels", {}), dict)):
             raise ValueError(f"item {i}: each item needs an `id`, a `text` and an object of `labels`")
+        sib = it.get("siblings")
+        if it.get("subject") is not None and not isinstance(it["subject"], str):
+            raise ValueError(f"item {i}: `subject` must be a string")
+        if sib is not None and not (isinstance(sib, list) and all(isinstance(x, str) for x in sib)):
+            raise ValueError(f"item {i}: `siblings` must be a list of strings")
     return spec
 
 
