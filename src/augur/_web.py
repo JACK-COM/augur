@@ -1,4 +1,4 @@
-# GENERATED from panoply-lib/web.py (bfb4e78+uncommitted) by sync.sh: edit the source and rerun sync.sh, never this copy.
+# GENERATED from panoply-lib/web.py (aec4985) by sync.sh: edit the source and rerun sync.sh, never this copy.
 """web: the one HTTP client the Panoply's pieces use, bounded so a hostile or slow server
 cannot hold a piece, redirect it somewhere it was not sent, or walk it into this machine's
 own network.

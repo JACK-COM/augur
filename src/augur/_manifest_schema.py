@@ -1,4 +1,4 @@
-# GENERATED from panoply-lib/manifest_schema.py (f08210c) by sync.sh: edit the source and rerun sync.sh, never this copy.
+# GENERATED from panoply-lib/manifest_schema.py (f08210c+uncommitted) by sync.sh: edit the source and rerun sync.sh, never this copy.
 """manifest_schema: structural checks of a piece's JSON manifest against its schema.
 
 Each piece owns its schema as a dict; this checks a manifest against it and writes
@@ -61,6 +61,8 @@ def validate_file(path, schema):
         data = json.loads(p.read_text())
     except (ValueError, OSError) as e:
         return [f"manifest does not parse: {e}"]
+    except RecursionError:          # Python 3.9's decoder recurses per level; a deep file is no manifest
+        return ["manifest does not parse: nested too deep"]
     return check_value(data, schema)
 
 
