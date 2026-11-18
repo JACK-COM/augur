@@ -70,6 +70,10 @@ def ask(cfg: dict, state: Any, questions: dict, model: Optional[str], timeout: f
             line = _line(p, timeout)
             if line is None:
                 p.kill()
+                p.wait()
+                for f in (p.stdin, p.stdout):
+                    if f:
+                        f.close()
                 _proc = None
                 raise errors.AugurUnavailable(f"laya worker gave no whole answer in {timeout}s; killed")
         except (OSError, ValueError) as e:  # OSError covers an interpreter Popen cannot start
