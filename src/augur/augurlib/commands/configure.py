@@ -59,11 +59,11 @@ def backend(args: argparse.Namespace) -> int:
             return 2
         if given:
             return entries.save_backend(args.name, given, make_default=args.default, force=args.force,
-                                         store_key=args.store_key)
+                                        store_key=args.store_key)
         if args.name not in manifest.load()["backends"]:
             print(f"no backend named {args.name!r}; `augur configure backend --list` shows them", file=sys.stderr)
             return 2
-        name, cfg, t = manifest.backend_entry(args.name)          # an existing backend: a key, the default, or both
+        name, cfg, t = manifest.backend_entry(args.name)     # an existing backend: a key, the default, or both
         if args.force:
             print("--force saves settings; give some, or drop it", file=sys.stderr)
             return 2

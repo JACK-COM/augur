@@ -201,7 +201,7 @@ def save_backend(name, given, *, replace=False, make_default=False, force=False,
     current = manifest.load()["backend"]
     if not make_default and confirm and current != name:
         make_default = confirm(f"Make {name} the default backend? It is {current} now.")
-    with fsio.manifest_lock():                  # read under the lock: another run may have written since
+    with fsio.manifest_lock():                   # read under the lock: another run may have written since
         user = manifest.user_manifest()
         if not replace:                     # merge over the entry as it is now, keeping a same-name run's keys
             entry = {**manifest.merge(user["backends"].get(name) or {}, given, manifest.shipped_defaults()["backends"].get(name)),

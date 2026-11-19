@@ -41,7 +41,7 @@ def run(a: argparse.Namespace) -> int:
     try:
         reqs: list = []
         n, read = 0, 0
-        manifest.backend_entry(a.backend)          # an unknown backend refuses before any input is held
+        manifest.backend_entry(a.backend)     # an unknown backend refuses before any input is held
         while True:
             line = sys.stdin.readline(request.REQUEST_CAP + 1)
             if not line:
