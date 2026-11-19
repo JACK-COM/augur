@@ -7,7 +7,7 @@ how it is used is `augurlib/help_text.py`'s USAGE; each job has its own module i
 import sys
 from pathlib import Path
 
-__version__ = "0.7.0"                          # the one home: pyproject.toml and the formula's test read it
+__version__ = "0.7.1"                          # the one home: pyproject.toml and the formula's test read it
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:                  # augurlib and the panoply-lib copies, installed flat or not;
