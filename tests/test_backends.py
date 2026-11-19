@@ -11,7 +11,7 @@ from tests.harness import AugurCase, unavailable
 from augurlib import paths  # noqa: E402
 from augur import ask, available, manifest_findings  # noqa: E402
 from augurlib.backends.command import argv as _command_argv  # noqa: E402
-from augurlib.manifest import BACKEND_TYPES, _backend, _defaults  # noqa: E402
+from augurlib.manifest import BACKEND_TYPES, backend_entry, shipped_defaults  # noqa: E402
 
 
 class Backends(AugurCase):
@@ -62,7 +62,7 @@ class Backends(AugurCase):
         cmd, _ = self.stand()
         # the shipped defaults are configuration of the user's shape: every entry typed, all clean
         self.assertTrue(manifest_findings(paths.DEFAULTS_FILE) == [], f"defaults.json: {manifest_findings(paths.DEFAULTS_FILE)}")
-        self.assertTrue(all(e.get("type") in BACKEND_TYPES for e in _defaults()["backends"].values()),
+        self.assertTrue(all(e.get("type") in BACKEND_TYPES for e in shipped_defaults()["backends"].values()),
                         "defaults.json: an entry names no known type")
         # a keyless systemone entry, as Ollama serves one; a type change replacing a default whole
         with open(Path(home) / "augur.json", "w") as f:
@@ -89,7 +89,7 @@ class Backends(AugurCase):
                         f"keyless systemone: url {url}, headers {sorted(headers)}, timeout {wait}")
         self.assertTrue(all(u.startswith("http://localhost:1/") for u, _, _ in stub.requests[n:]), "keyless: a call left the entry's url")
         r = ask("banana", fruit, backend="jev")
-        self.assertTrue(r["answers"]["fruit"]["noul"] == 0.97 and "url" not in _backend("jev")[1],
+        self.assertTrue(r["answers"]["fruit"]["noul"] == 0.97 and "url" not in backend_entry("jev")[1],
                         "a type change did not replace the default whole")
         self.assertTrue(unavailable(lambda: ask("x", fruit, backend="nourl"), "systemone backend with no `url`"), "systemone without url")
         self.assertTrue(unavailable(lambda: ask("x", fruit, backend="odd"), "unknown type 'grpc'"), "unknown type accepted")

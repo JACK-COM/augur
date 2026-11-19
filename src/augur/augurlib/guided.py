@@ -15,7 +15,7 @@ def _prompt(text, default=None):
     return a or default
 
 
-def _yes(text, default=False):
+def yes(text, default=False):
     a = input(f"{text} [{'Y/n' if default else 'y/N'}] ").strip().lower()
     return a in ("y", "yes") if a else default
 
@@ -32,16 +32,16 @@ def _choose(text, options):
 
 
 # What a backend type's guided questions are asked through.
-UI = SimpleNamespace(prompt=_prompt, yes=_yes, choose=_choose)
+UI = SimpleNamespace(prompt=_prompt, yes=yes, choose=_choose)
 
 
-def _guided_backend(name=None):
+def guided_backend(name=None):
     """Add or replace a backend in a terminal, by the same verify-then-write as the flags."""
     try:
         menu = backends.kinds()
         pick = _choose("Where does the model run?", [k.label for _, k in menu])
         tname, kind = menu[pick]
-        got = kind.run(UI, manifest._defaults()["backends"].get(tname))
+        got = kind.run(UI, manifest.shipped_defaults()["backends"].get(tname))
         if got is None:
             return kind.declined
         settings, suggested = got
@@ -51,17 +51,17 @@ def _guided_backend(name=None):
                 break
             print(entries.NAME_RULE)
             name = None
-        known = manifest._manifest()["backends"]
-        shipped = manifest._defaults()["backends"].get(name)
+        known = manifest.load()["backends"]
+        shipped = manifest.shipped_defaults()["backends"].get(name)
         if shipped and shipped.get("type") == settings["type"]:
             left = sorted(set(shipped) - set(settings) - {"type"})
             print(f"{name} is shipped; what you leave out keeps its shipped value ({', '.join(left)})")
-        if name in known and not _yes(f"{name} exists ({manifest._type(known[name])}, {guard.relay(backends.TYPES[manifest._type(known[name])].describe(known[name]), 160)}). "
+        if name in known and not yes(f"{name} exists ({manifest.entry_type(known[name])}, {guard.relay(backends.TYPES[manifest.entry_type(known[name])].describe(known[name]), 160)}). "
                                       f"Replace it?"):
             print("augur.json unchanged")
             return 1
         store = kind.named(UI, name, settings) if kind.named else False
-        return entries._save_backend(name, settings, replace=True, store_key=store, confirm=_yes)
+        return entries.save_backend(name, settings, replace=True, store_key=store, confirm=yes)
     except (EOFError, KeyboardInterrupt):
         print("\naugur.json unchanged")
         return 1

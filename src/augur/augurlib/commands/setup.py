@@ -22,9 +22,9 @@ def smoke(a: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory() as home:
         os.environ["AUGUR_HOME"] = home
         try:
-            text, questions, kw = request._request(contract.REQUEST)
+            text, questions, kw = request.parse_request(contract.REQUEST)
             reply = f"import sys; sys.stdin.read(); print({json.dumps(json.dumps(contract.REPLY))})"
-            fsio._write_json(Path(home) / "augur.json", {"backends": {"smoke": {
+            fsio.write_json(Path(home) / "augur.json", {"backends": {"smoke": {
                 "type": "command", "command": [sys.executable, "-c", reply]}}})
             r = client.ask(text, questions, subject=kw["subject"], backend="smoke", caller="selftest")
             if contract.probability(r) != contract.probability(contract.REPLY):
@@ -68,7 +68,7 @@ VERBS = (
     Verb("schema", "write the manifest schema where an editor can be pointed at it", schema),
     Verb("help", "print a guide", guide, guide_args),
     Verb("install", "put `augur` on PATH from a source checkout (a symlink in ~/.local/bin)",
-         lambda a: install._install()),
+         lambda a: install.install()),
     Verb("uninstall", "remove what augur made; print what is left",
-         lambda a: install._uninstall(a.yes, a.dry_run), uninstall_args),
+         lambda a: install.uninstall(a.yes, a.dry_run), uninstall_args),
 )

@@ -23,13 +23,13 @@ REASK_BAND = 0.2
 def available(backend=None):
     """Positive check for the backend. Returns (ok, reason)."""
     try:
-        name, cfg, t = manifest._backend(backend)
+        name, cfg, t = manifest.backend_entry(backend)
     except errors.AugurUnavailable as e:
         return False, str(e)
-    return _probe(name, cfg, t)
+    return probe(name, cfg, t)
 
 
-def _probe(name, cfg, t, caller="check", timeout=60):
+def probe(name, cfg, t, caller="check", timeout=60):
     """`available` for a resolved entry, saved or not. -> (ok, reason)"""
     check = backends.TYPES[t].available
     if check:
@@ -59,7 +59,7 @@ def ask(state, questions, *, subject=None, siblings=None, backend=None, model=No
     if uid:
         state["uid"] = uuid.uuid4().hex
     request.questions_ok(questions)
-    name, cfg, t = manifest._backend(backend)
+    name, cfg, t = manifest.backend_entry(backend)
     bt = backends.TYPES[t]
     if model and not bt.any_model(cfg) and model != bt.own_model(cfg) and model not in (cfg.get("models") or []):
         # a request's `model` picks among what the entry allows, never any model or checkpoint:
@@ -75,12 +75,12 @@ def _answer(name, cfg, t, state, questions, model, timeout, retries, caller):
         resp = backends.TYPES[t].ask(cfg, state, questions, model, timeout, retries)
     except errors.NoKey as e:
         raise errors.NoKey(f"{e}; `augur configure backend {name} --store-key` stores one") from None
-    qtypes._check_answers(resp["answers"])
+    qtypes.check_answers(resp["answers"])
     if resp.get("truncated"):
         print(f"augur: {name} cut the text to its context ({guard.relay(resp.get('max_len', '?'), 20)} tokens); "
               f"its answers cover the start only", file=sys.stderr)
     resp["backend"] = name
-    ledger._log(name, caller, resp["model"], len(questions), resp["usage"]["input_tokens"], float(cfg.get("price_per_mtok") or 0))
+    ledger.log(name, caller, resp["model"], len(questions), resp["usage"]["input_tokens"], float(cfg.get("price_per_mtok") or 0))
     return resp
 
 

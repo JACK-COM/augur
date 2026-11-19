@@ -16,7 +16,7 @@ def cell(v: object) -> str:
     return "'" + s if s[:1] in ("=", "+", "-", "@") else s
 
 
-def _log(backend, caller, model, nq, tokens, price):
+def log(backend, caller, model, nq, tokens, price):
     try:
         ledger = paths.home() / "usage.csv"
         ledger.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

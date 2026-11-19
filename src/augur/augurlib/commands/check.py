@@ -15,7 +15,7 @@ def run(a: argparse.Namespace) -> int:
     for finding in manifest.manifest_findings():
         print(finding)
     if a.live:
-        return live._live_check(a.backend)
+        return live.live_check(a.backend)
     ok, reason = client.available(a.backend)
     print(("ok: " if ok else "unavailable: ") + reason)
     return 0 if ok else 3

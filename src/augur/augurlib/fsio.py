@@ -13,7 +13,7 @@ from . import errors
 from . import paths
 
 
-def _write_json(path, obj, indent=2):
+def write_json(path, obj, indent=2):
     """Write whole or not at all. A temporary file of its own beside the target, flushed to disk,
     is renamed over it, so neither a reader nor a second writer sees half a file; the target keeps
     its mode, and a symlinked augur.json keeps its link, the file it points at being replaced."""
@@ -64,7 +64,7 @@ LOCK_WAIT = 10
 
 
 @contextlib.contextmanager
-def _manifest_lock():
+def manifest_lock():
     """Hold augur.json's lock across a read-modify-write, so two `configure` runs at once cannot
     each read the old file and the second write drop the first one's change. A holder only reads
     and writes a small file, so one still holding it after LOCK_WAIT seconds is stuck, and the

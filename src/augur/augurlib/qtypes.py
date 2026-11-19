@@ -28,7 +28,7 @@ def score(instructions, levels):
 MAX_QUESTIONS = 64          # per call: every question is read against the whole text
 
 
-def _check_answers(answers):
+def check_answers(answers):
     """Refuse a non-finite or out-of-range probability. JSON parses NaN and Infinity, and a
     NaN fails every comparison, so a caller gating on `noul >= threshold` would pass it:
     an injection screen taking `max(best, nan)` keeps `best` and never withholds."""

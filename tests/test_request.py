@@ -1,4 +1,4 @@
-"""A whole call as one JSON object: `ask --request`, and the faults `_request` names."""
+"""A whole call as one JSON object: `ask --request`, and the faults `parse_request` names."""
 import contextlib
 import csv
 import io
@@ -10,7 +10,7 @@ from pathlib import Path
 from tests.harness import AugurCase
 
 from augur import main  # noqa: E402
-from augurlib.request import _request  # noqa: E402
+from augurlib.request import parse_request  # noqa: E402
 
 
 class Request(AugurCase):
@@ -45,7 +45,7 @@ class Request(AugurCase):
                               ({"questions": fruit, "text": "x", "siblings": "a,b"}, "`siblings`"),
                               ({"questions": fruit, "text": "x", "caller": ""}, "`caller`")):
             try:
-                _request(bad)
+                parse_request(bad)
                 self.fail(f"request accepted: {bad}")
             except ValueError as e:
                 self.assertTrue(fragment in str(e), f"request {bad}: {e}")

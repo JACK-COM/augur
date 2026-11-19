@@ -12,7 +12,7 @@ from . import paths
 
 # One schema per backend type, each declared by its type's module. An entry is checked
 # against the schema its `type` names; the shared checker has no oneOf, so the dispatch is
-# Augur's (`_entry_findings`).
+# Augur's (`entry_findings`).
 BACKEND_TYPES = backends.schemas()
 
 
@@ -55,7 +55,7 @@ def _schema_lib():
     return _manifest_schema
 
 
-def _entry_findings(data, defaults):
+def entry_findings(data, defaults):
     """Findings for each entry under `backends`, checked against the schema its type names."""
     out = []
     backends = data.get("backends") if isinstance(data, dict) else None
@@ -63,7 +63,7 @@ def _entry_findings(data, defaults):
         if not isinstance(entry, dict):
             continue                         # the top-level check already named it
         where = f"backends.{name}"
-        t = _type(entry, defaults.get(name))
+        t = entry_type(entry, defaults.get(name))
         if t is None:
             out.append(f"{where}: names no `type`; give it one of {', '.join(sorted(BACKEND_TYPES))}")
             _schema_lib().check_value(entry, _ANY_TYPE, where, out)
@@ -83,20 +83,20 @@ def manifest_findings(path=None):
     p = Path(path) if path else paths.manifest()
     found = _schema_lib().validate_file(p, MANIFEST_SCHEMA)
     if p.is_file() and not any(f.startswith("manifest does not parse") for f in found):
-        defaults = {} if path else _defaults().get("backends", {})
-        found += _entry_findings(json.loads(p.read_text(encoding="utf-8")), defaults)
+        defaults = {} if path else shipped_defaults().get("backends", {})
+        found += entry_findings(json.loads(p.read_text(encoding="utf-8")), defaults)
     # the shared checker anchors every finding on the word "manifest"; name the file instead
     return [p.name + (f[len("manifest"):] if f.startswith("manifest") else ": " + f) for f in found]
 
 
-def _defaults():
+def shipped_defaults():
     try:
         return json.loads(paths.DEFAULTS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise errors.AugurUnavailable(f"{paths.DEFAULTS_FILE}: the shipped defaults do not load ({e}); reinstall augur")
 
 
-def _type(entry, default=None):
+def entry_type(entry, default=None):
     """An entry's type: its own, else the default's of the same name, else `command` for a
     0.4 entry that names only a command. None when none of those resolves, or when it is not
     a string (a hand edit), which no lookup may take as a key."""
@@ -104,18 +104,18 @@ def _type(entry, default=None):
     return t if isinstance(t, str) else None
 
 
-def _merged(base, cfg, default=None):
+def merge(base, cfg, default=None):
     """The manifest's one rule: `cfg` merges over `base`, unless it names a type other than
     base's (resolved through `default`), which replaces base whole so no key of the old type
     lingers."""
-    if cfg.get("type") and cfg["type"] != _type(base, default):
+    if cfg.get("type") and cfg["type"] != entry_type(base, default):
         base = {}
     return {**base, **cfg}
 
 
-def _manifest():
-    """The shipped defaults, then augur.json over them by `_merged`'s rule. Then AUGUR_BACKEND."""
-    m = _defaults()
+def load():
+    """The shipped defaults, then augur.json over them by `merge`'s rule. Then AUGUR_BACKEND."""
+    m = shipped_defaults()
     p = paths.manifest()
     if p.exists():
         try:
@@ -131,25 +131,25 @@ def _manifest():
         for name, cfg in (user.get("backends") or {}).items():
             if not isinstance(cfg or {}, dict):
                 raise errors.AugurUnavailable(f"{p}: backends.{name} is not an object")
-            m["backends"][name] = _merged(m["backends"].get(name) or {}, cfg or {})
+            m["backends"][name] = merge(m["backends"].get(name) or {}, cfg or {})
     if os.environ.get("AUGUR_BACKEND"):
         m["backend"] = os.environ["AUGUR_BACKEND"]
     return m
 
 
-def _backend(name=None):
+def backend_entry(name=None):
     """(name, merged entry, type) for the named or default backend, or AugurUnavailable."""
-    m = _manifest()
+    m = load()
     name = name or m["backend"]
     if name not in m["backends"]:
         raise errors.AugurUnavailable(f"unknown backend {name!r}; manifest knows {sorted(m['backends'])}")
     cfg = m["backends"][name]
-    return name, cfg, _resolve(name, cfg)
+    return name, cfg, resolve(name, cfg)
 
 
-def _resolve(name, cfg):
+def resolve(name, cfg):
     """A merged entry's type, once it names one Augur speaks and every key that type requires."""
-    t = _type(cfg)
+    t = entry_type(cfg)
     if t is None:
         raise errors.AugurUnavailable(f"backend {name!r} names no `type`; give it one of {', '.join(sorted(BACKEND_TYPES))}")
     if t not in BACKEND_TYPES:
@@ -164,7 +164,7 @@ def _resolve(name, cfg):
     return t
 
 
-def _user_manifest():
+def user_manifest():
     """augur.json as the user wrote it, {} when absent. Raises ValueError when it does not parse."""
     p = paths.manifest()
     if not p.exists():
@@ -183,12 +183,12 @@ def _user_manifest():
     return raw
 
 
-def _origin(name, user, shipped):
+def origin(name, user, shipped):
     if name not in shipped:
         return "yours"
     if name not in user:
         return "shipped"
-    same = _type(user[name], shipped[name]) == shipped[name].get("type")
+    same = entry_type(user[name], shipped[name]) == shipped[name].get("type")
     return "shipped, changed" if same else "yours, replaces shipped"
 
 

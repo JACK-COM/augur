@@ -13,7 +13,7 @@ from . import manifest
 from . import paths
 
 
-def _install():
+def install():
     """Symlink `augur` into paths.BIN for a source checkout. A link works from any shell, a
     subprocess and cron, where an alias reaches an interactive shell only."""
     if paths.PACKAGED:
@@ -37,7 +37,7 @@ def _install():
     return 0 if on_path else 2
 
 
-def _uninstall(yes, dry):
+def uninstall(yes, dry):
     link = paths.BIN / "augur"
     links = [link] if not paths.PACKAGED and link.is_symlink() else []
     venv = paths.LAYA_VENV if paths.LAYA_VENV.is_dir() else None
@@ -52,7 +52,7 @@ def _uninstall(yes, dry):
         return 0
     if (links or venv) and not yes:
         if sys.stdin.isatty():
-            if not guided._yes("proceed?"):
+            if not guided.yes("proceed?"):
                 print("nothing removed")
                 return 1
         else:
@@ -66,13 +66,13 @@ def _uninstall(yes, dry):
         print(f"removed {venv}")
     print("\nleft for you, if you want it gone completely:")
     try:
-        backends = manifest._manifest().get("backends") or {}
+        backends = manifest.load().get("backends") or {}
     except errors.AugurUnavailable:
         backends = {}
     if paths.home().is_dir():
         print(f"  the home:     rm -r {shlex.quote(str(paths.home()))}   (augur.json, its schema and the usage ledger)")
     for t in types.TYPES.values():
-        for line in sorted({ln for c in backends.values() if manifest._type(c) == t.name for ln in t.leftovers(c)}):
+        for line in sorted({ln for c in backends.values() if manifest.entry_type(c) == t.name for ln in t.leftovers(c)}):
             print(line)
     if paths.PACKAGED:
         print("  the command:  brew uninstall jack-com/panoply/augur   (or `uv tool uninstall augur`)")

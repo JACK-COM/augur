@@ -204,7 +204,7 @@ def calibrate(spec: dict, *, backend: Optional[str] = None, runs: int = 1, limit
     if compare and previous is None:
         from . import request
         previous = request.load(compare, "--compare")
-    name, cfg, t = manifest._backend(backend)
+    name, cfg, t = manifest.backend_entry(backend)
     qs = {k: v for k, v in spec["questions"].items() if not questions or k in questions}
     unknown = sorted(set(questions or []) - set(spec["questions"]))
     if unknown:

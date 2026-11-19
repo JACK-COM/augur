@@ -32,7 +32,7 @@ def _acct(attributes):
     return bytes.fromhex(m.group(1)).decode("utf-8", "replace") if m.group(1) else m.group(2)
 
 
-def _store_key(name, cfg):
+def store_key(name, cfg):
     """Put the key where the entry looks for it. On macOS `security` prompts for it itself, so
     the key is never an argument, never in shell history and never in Augur's output; Augur
     takes no key by flag at all. Elsewhere, say which variable to export."""

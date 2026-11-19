@@ -37,7 +37,7 @@ def args(f: argparse.ArgumentParser) -> None:
 def run(a: argparse.Namespace) -> int:
     if a.what == "backend":
         return backend(a)
-    return check._configure_check(a.file, a.threshold, a.reset)
+    return check.configure_check(a.file, a.threshold, a.reset)
 
 
 def backend(args: argparse.Namespace) -> int:
@@ -48,30 +48,30 @@ def backend(args: argparse.Namespace) -> int:
             if args.name or acted or (args.list and args.remove is not None):
                 print("--list and --remove NAME stand alone", file=sys.stderr)
                 return 2
-            return entries._list_backends() if args.list else entries._remove_backend(args.remove)
+            return entries.list_backends() if args.list else entries.remove_backend(args.remove)
         terminal = sys.stdin.isatty() and sys.stdout.isatty()
         if not acted:
             if terminal:
-                return guided._guided_backend(args.name)
-            return entries._show_backend(args.name) if args.name else entries._list_backends()
+                return guided.guided_backend(args.name)
+            return entries.show_backend(args.name) if args.name else entries.list_backends()
         if not args.name:
             print("name the backend: augur configure backend NAME --type ...", file=sys.stderr)
             return 2
         if given:
-            return entries._save_backend(args.name, given, make_default=args.default, force=args.force,
+            return entries.save_backend(args.name, given, make_default=args.default, force=args.force,
                                          store_key=args.store_key)
-        if args.name not in manifest._manifest()["backends"]:
+        if args.name not in manifest.load()["backends"]:
             print(f"no backend named {args.name!r}; `augur configure backend --list` shows them", file=sys.stderr)
             return 2
-        name, cfg, t = manifest._backend(args.name)          # an existing backend: a key, the default, or both
+        name, cfg, t = manifest.backend_entry(args.name)          # an existing backend: a key, the default, or both
         if args.force:
             print("--force saves settings; give some, or drop it", file=sys.stderr)
             return 2
         if args.store_key:
-            code = keys._store_key(name, cfg)
+            code = keys.store_key(name, cfg)
             if code:
                 return code
-            ok, reason = client._probe(name, cfg, t, caller="configure", timeout=entries.PROBE_TIMEOUT)
+            ok, reason = client.probe(name, cfg, t, caller="configure", timeout=entries.PROBE_TIMEOUT)
             print(("ok: " if ok else "unavailable: ") + reason)
             if not ok:
                 return 3
@@ -79,10 +79,10 @@ def backend(args: argparse.Namespace) -> int:
             code = entries.default_refused(name, cfg, t)
             if code:
                 return code
-            with fsio._manifest_lock():
-                user = manifest._user_manifest()
-                entries._set_default(user, name)
-                path = fsio._write_json(paths.manifest(), user)
+            with fsio.manifest_lock():
+                user = manifest.user_manifest()
+                entries.set_default(user, name)
+                path = fsio.write_json(paths.manifest(), user)
             print(f"{name} is the default ({path}); "
                   f"`augur check` asks it a question")
         return 0

@@ -12,8 +12,8 @@ from tests.harness import AugurCase
 
 from augur import main  # noqa: E402
 from augurlib.entries import PROBE_TIMEOUT  # noqa: E402
-from augurlib.guided import _guided_backend  # noqa: E402
-from augurlib.manifest import _backend, _manifest  # noqa: E402
+from augurlib.guided import guided_backend  # noqa: E402
+from augurlib.manifest import backend_entry, load  # noqa: E402
 
 
 class Configure(AugurCase):
@@ -22,7 +22,7 @@ class Configure(AugurCase):
         sys.stdin = io.StringIO(answers)          # never a terminal here, so never guided by accident
         try:
             with contextlib.redirect_stdout(o), contextlib.redirect_stderr(o):
-                code = main(argv) if argv is not None else _guided_backend()
+                code = main(argv) if argv is not None else guided_backend()
         finally:
             sys.stdin = saved_in
         return code, o.getvalue()
@@ -78,9 +78,9 @@ class Configure(AugurCase):
         self.assertTrue(code == 0 and saved()["backends"]["loc"] == {"type": "command", "command": " ".join(cmd("ok"))},
                         f"a new type did not replace the entry whole: {saved()['backends']['loc']}")
         code, out = run(["configure", "backend", "loc", "--default"])
-        self.assertTrue(code == 0 and saved()["backend"] == "loc" and _manifest()["backend"] == "loc", f"--default: {code} {out}")
+        self.assertTrue(code == 0 and saved()["backend"] == "loc" and load()["backend"] == "loc", f"--default: {code} {out}")
         code, out = run(["configure", "backend", "jev", "--model", "jev-9"])
-        self.assertTrue(code == 0 and saved()["backends"]["jev"] == {"model": "jev-9"} and _backend("jev")[1]["url"].startswith("https"),
+        self.assertTrue(code == 0 and saved()["backends"]["jev"] == {"model": "jev-9"} and backend_entry("jev")[1]["url"].startswith("https"),
                         f"a shipped name's change is not a merge over it: {saved()['backends'].get('jev')}")
         code, out = run(["configure", "backend", "--list"])
         self.assertTrue(code == 0 and "* loc" in out and "shipped, changed" in out and "yours" in out, f"--list: {out}")

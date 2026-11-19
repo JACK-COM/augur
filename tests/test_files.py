@@ -7,9 +7,9 @@ from pathlib import Path
 
 from tests.harness import AugurCase
 
-from augurlib.fsio import _manifest_lock, _write_json  # noqa: E402
+from augurlib.fsio import manifest_lock, write_json  # noqa: E402
 from augurlib.keys import _acct  # noqa: E402
-from augurlib.manifest import _user_manifest  # noqa: E402
+from augurlib.manifest import user_manifest  # noqa: E402
 
 
 class Files(AugurCase):
@@ -25,11 +25,11 @@ class Files(AugurCase):
         real.chmod(0o640)
         link = Path(home) / "linked.json"
         link.symlink_to(real)
-        _write_json(link, {"name": "café"})
+        write_json(link, {"name": "café"})
         self.assertTrue(link.is_symlink() and json.loads(real.read_text(encoding="utf-8")) == {"name": "café"}
                         and (real.stat().st_mode & 0o777) == 0o640 and "café" in real.read_text(encoding="utf-8")
-                        and not list(Path(home).glob("*.tmp")), "_write_json: link, mode, text or a leftover temporary")
-        with _manifest_lock():
+                        and not list(Path(home).glob("*.tmp")), "write_json: link, mode, text or a leftover temporary")
+        with manifest_lock():
             self.assertTrue((Path(home) / "augur.json.lock").exists(), "the manifest lock")
         self.assertTrue(_acct('    "acct"<blob>="okure"\n    "svce"<blob>="X"\n') == "okure"
                         and _acct("") == getpass.getuser()
@@ -37,10 +37,10 @@ class Files(AugurCase):
         (Path(home) / "augur.json").write_text("{}")
 
         def writer(i):
-            with _manifest_lock():
-                u = _user_manifest()
+            with manifest_lock():
+                u = user_manifest()
                 u["backends"][f"w{i}"] = {"type": "command", "command": "x"}
-                _write_json(Path(home) / "augur.json", u)
+                write_json(Path(home) / "augur.json", u)
         ts = [threading.Thread(target=writer, args=(i,)) for i in range(8)]
         for t_ in ts:
             t_.start()

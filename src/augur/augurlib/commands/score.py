@@ -41,7 +41,7 @@ def run(a: argparse.Namespace) -> int:
     try:
         reqs: list = []
         n, read = 0, 0
-        manifest._backend(a.backend)          # an unknown backend refuses before any input is held
+        manifest.backend_entry(a.backend)          # an unknown backend refuses before any input is held
         while True:
             line = sys.stdin.readline(request.REQUEST_CAP + 1)
             if not line:
@@ -54,14 +54,14 @@ def run(a: argparse.Namespace) -> int:
                 raise ValueError(f"more than {REQUESTS_CAP} requests; split the file")
             if line.strip():
                 try:
-                    reqs.append(request._request(request.load(line, f"line {n}", text=True)))
+                    reqs.append(request.parse_request(request.load(line, f"line {n}", text=True)))
                 except ValueError as e:
                     raise ValueError(f"line {n}: {e}") from None
         shape = request.load(a.against, "--against") if a.against else {}
         if not (isinstance(shape, dict) and all(isinstance(shape.get(k, 0), (int, float)) and not isinstance(shape.get(k, 0), bool)
                                                 for k in ("p10", "median", "p90"))):
             raise ValueError("--against is not a calibrate run's shape file")
-        name, cfg, t = manifest._backend(a.backend)
+        name, cfg, t = manifest.backend_entry(a.backend)
     except errors.AugurUnavailable as e:
         return unavailable(e)
     except (OSError, ValueError) as e:

@@ -67,7 +67,7 @@ def _load_check():
     return _check_spec(raw, raw.get("threshold", 0.5) if isinstance(raw, dict) else 0.5)
 
 
-def _configure_check(file, threshold, reset):
+def configure_check(file, threshold, reset):
     path = paths.check_file()
     if reset and (file is not None or threshold is not None):
         print("--reset takes no file or threshold", file=sys.stderr)
@@ -97,13 +97,13 @@ def _configure_check(file, threshold, reset):
     except (OSError, ValueError) as e:
         print(f"{file}: {e}", file=sys.stderr)
         return 2
-    fsio._write_json(path, spec, 1)
+    fsio.write_json(path, spec, 1)
     print(f"live check: {len(spec['items'])} items, {len(spec['questions'])} question(s), threshold {spec['threshold']}, "
           f"copied to {path}; `augur check --live` asks them, {len(spec['items'])} billed call(s)")
     return 0
 
 
-def _live_check(backend):
+def live_check(backend):
     """Known questions with known answers, asked for real: the backend answers AND answers
     right. The questions are the user's own from `augur configure check`, else two built-in
     Nouls in one call."""

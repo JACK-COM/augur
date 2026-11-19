@@ -29,7 +29,7 @@ def run(a: argparse.Namespace) -> int:
             if a.questions is not None:
                 raise ValueError("--request carries the questions; drop -q")
             req = request.load(a.request, "the request")
-            state, questions, kw = request._request(req)
+            state, questions, kw = request.parse_request(req)
             kw.update({k: v for k, v in flags.items() if v is not None})
         else:
             if a.questions is None or (a.text is None and a.state is None):

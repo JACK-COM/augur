@@ -41,7 +41,7 @@ def questions_ok(questions):
         raise ValueError(f"at most {qtypes.MAX_QUESTIONS} questions in one call, each read against the whole text")
 
 
-def _request(req):
+def parse_request(req):
     """A whole `ask` call as one JSON object -> ask()'s arguments. Raises ValueError naming
     the first fault; an unknown key is a fault, so a misspelled `subjcet` is never dropped."""
     if not isinstance(req, dict):
