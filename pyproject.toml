@@ -7,7 +7,7 @@ name = "augur"
 dynamic = ["version"]
 description = "Asks a decision model typed questions about a text and returns calibrated probabilities."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = ["numpy>=1.22"]
@@ -27,7 +27,7 @@ augur = ["INSTALL-augur.md", "defaults.json"]
 [tool.mypy]
 # `make typecheck`. augur.py puts its own directory on the path, so src/augur is the import
 # root; the underscore modules are panoply-lib copies, checked in panoply-lib.
-python_version = "3.9"
+python_version = "3.11"
 files = ["src/augur"]
 exclude = ['^src/augur/_[a-z]', '^src/augur/augur_laya\.py$']
 mypy_path = "src/augur"

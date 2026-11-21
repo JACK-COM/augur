@@ -6,4 +6,4 @@ pre-commit:
     selftest:
       run: python3 -m unittest discover -s tests -t . && python3 src/augur/augur.py selftest
     typecheck:
-      run: UV_OFFLINE=1 uvx --quiet --from mypy==1.18.2 mypy || uvx --quiet --from mypy==1.18.2 mypy
+      run: UV_OFFLINE=1 uvx --quiet --from mypy==2.4.1 mypy || uvx --quiet --from mypy==2.4.1 mypy

@@ -2,7 +2,7 @@
 .SILENT:
 
 # Pinned, so a mypy release never fails a commit the code did not change.
-MYPY = uvx --quiet --from mypy==1.18.2 mypy
+MYPY = uvx --quiet --from mypy==2.4.1 mypy
 
 help: ## | List all available commands
 	echo "Available commands in this makefile"
@@ -16,7 +16,7 @@ test: ## | Check the panoply-lib copies and the types, then run tests/ and the i
 	python3 -m unittest discover -s tests -t .
 	python3 src/augur/augur.py selftest
 
-typecheck: ## | Type-check src/augur as Python 3.9 reads it ([tool.mypy] in pyproject.toml)
+typecheck: ## | Type-check src/augur as Python 3.11 reads it ([tool.mypy] in pyproject.toml)
 	$(MYPY)
 
 version-patch: ## | Release the next PATCH version: stamp, test, tag, push, move the formula

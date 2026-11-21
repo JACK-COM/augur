@@ -19,15 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python: ["3.9", "3.14"]
-        # setup-python has no 3.9 build for Ubuntu 26.04, which ubuntu-latest became
-        # in 2026-11, so the floor runs on 24.04 until that image retires.
-        exclude:
-          - os: ubuntu-latest
-            python: "3.9"
-        include:
-          - os: ubuntu-24.04
-            python: "3.9"
+        python: ["3.11", "3.14", "3.15"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:

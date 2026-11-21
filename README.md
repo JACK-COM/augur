@@ -27,7 +27,7 @@ Then run `augur configure backend`, which asks where your model runs and checks 
 
 ## Requirements
 
-Python 3.9 or later and numpy. `jev` needs network access and a key; an Ollama model needs Ollama 0.35 or later; `laya` needs `laya` and `torch` in a virtualenv of its own; a command backend needs whatever its script needs. The keychain lookup is macOS; elsewhere the key comes from `TYPESAFE_API_KEY`. Tested on macOS and Linux (Debian, Python 3.12); on Windows, run it under WSL.
+Python 3.11 or later and numpy. `jev` needs network access and a key; an Ollama model needs Ollama 0.35 or later; `laya` needs `laya` and `torch` in a virtualenv of its own; a command backend needs whatever its script needs. The keychain lookup is macOS; elsewhere the key comes from `TYPESAFE_API_KEY`. Tested on macOS and Linux (Debian, Python 3.12); on Windows, run it under WSL.
 
 ## Security
 
